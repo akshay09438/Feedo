@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — Feedo</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="login-page">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">
+        <img src="/logo.png" alt="Feedo" style="width:36px; height:36px; border-radius:8px; object-fit:cover; display:block;" />
+      </div>
+      <div class="auth-logo-title">Feedo</div>
+      <div class="auth-logo-sub">Video review &amp; collaboration</div>
+    </div>
+
+    <form class="auth-form" id="login-form" autocomplete="off">
+      <div id="login-error" class="auth-error">Incorrect username or password. Please try again.</div>
+      <div class="form-group">
+        <label class="form-label" for="username-input">Username</label>
+        <input
+          class="form-input"
+          type="text"
+          id="username-input"
+          placeholder="Enter username…"
+          autocomplete="username"
+          autofocus
+        />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password-input">Password</label>
+        <input
+          class="form-input"
+          type="password"
+          id="password-input"
+          placeholder="Enter password…"
+          autocomplete="current-password"
+        />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center; padding:11px;">
+        Sign In
+      </button>
+    </form>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/utils.js"></script>
+<script src="/login.js"></script>
+</body>
+</html>

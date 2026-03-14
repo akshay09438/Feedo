@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Review — Feedo</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div class="app-layout">
+  <div id="sidebar-container"></div>
+
+  <div class="video-page">
+    <!-- Video page header -->
+    <div class="video-header">
+      <a href="/" id="back-link" class="video-header-back">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        Back
+      </a>
+      <div style="width:1px; height:16px; background:var(--border);"></div>
+      <span id="video-name" class="video-header-name">Loading…</span>
+      <button id="share-btn" class="btn btn-secondary" style="font-size:13px; flex-shrink:0;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+          <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+        Share
+      </button>
+      <button id="delete-video-btn" class="btn btn-danger" style="font-size:13px; flex-shrink:0;" title="Delete this video">
+        🗑 Delete
+      </button>
+    </div>
+
+    <!-- Video + comments layout -->
+    <div class="video-layout">
+
+      <!-- Video Side -->
+      <div class="video-side">
+        <div class="video-wrapper">
+          <video id="video-el" preload="metadata"></video>
+        </div>
+
+        <!-- Custom Controls -->
+        <div class="video-controls">
+          <div class="progress-track" id="progress-track">
+            <div class="progress-track-bg" id="progress-track-bg">
+              <div class="progress-track-fill" id="progress-track-fill"></div>
+            </div>
+            <div class="progress-track-handle" id="progress-track-handle"></div>
+          </div>
+          <div class="controls-row">
+            <button class="ctrl-btn play-btn" title="Play/Pause">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            </button>
+            <button class="ctrl-btn mute-btn" title="Mute">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+              </svg>
+            </button>
+            <input type="range" class="vol-slider" min="0" max="1" step="0.02" value="1" title="Volume" />
+            <div class="time-display">
+              <span class="current">0:00</span> / --:--
+            </div>
+            <div class="ctrl-spacer"></div>
+            <button class="ctrl-btn fullscreen-btn" title="Fullscreen">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 3 21 3 21 9"/>
+                <polyline points="9 21 3 21 3 15"/>
+                <line x1="21" y1="3" x2="14" y2="10"/>
+                <line x1="3" y1="21" x2="10" y2="14"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Comments Panel -->
+      <div class="comments-panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            Comments
+            <span class="comment-count-badge" id="comment-count-badge">0</span>
+          </div>
+        </div>
+
+        <div class="comments-list" id="comments-list">
+          <div style="text-align:center; padding:40px; color:var(--text-secondary);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+          </div>
+        </div>
+
+        <!-- Add Comment -->
+        <div class="add-comment-area">
+          <div id="comment-at-badge" class="comment-at-badge" style="display:none;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Commenting at <strong id="comment-at-time">0:00</strong>
+          </div>
+          <textarea
+            class="comment-textarea"
+            id="comment-text"
+            placeholder="Click to pause &amp; comment…"
+            rows="3"
+          ></textarea>
+          <div class="selected-files-list" id="selected-files-list"></div>
+          <div class="comment-form-footer">
+            <button class="attach-btn" id="attach-btn" title="Attach files">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+              </svg>
+              Attach
+            </button>
+            <div class="ctrl-spacer"></div>
+            <button class="btn btn-primary" id="submit-comment" style="font-size:13px; padding:7px 16px;">
+              Add Comment
+            </button>
+          </div>
+          <input type="file" id="attachment-input" multiple style="display:none;" />
+        </div>
+      </div>
+
+    </div><!-- /video-layout -->
+  </div><!-- /video-page -->
+</div><!-- /app-layout -->
+
+<div id="toast-container"></div>
+<div id="modal-backdrop"></div>
+
+<script src="/utils.js"></script>
+<script src="/sidebar.js"></script>
+<script src="/video.js"></script>
+</body>
+</html>
