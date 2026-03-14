@@ -398,6 +398,14 @@ function createVideoPlayer(videoEl, opts = {}) {
     if (onTimeUpdate) onTimeUpdate(videoEl.currentTime);
   });
   videoEl.addEventListener('loadedmetadata', () => {
+    // Fill the dominant dimension: vertical = full height, horizontal = full width
+    if (videoEl.videoHeight > videoEl.videoWidth) {
+      videoEl.style.height = '100%';
+      videoEl.style.width = 'auto';
+    } else {
+      videoEl.style.width = '100%';
+      videoEl.style.height = 'auto';
+    }
     updateTime();
     renderMarkers();
   });
