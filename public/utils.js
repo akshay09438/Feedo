@@ -397,18 +397,36 @@ function createVideoPlayer(videoEl, opts = {}) {
     updateTime();
     if (onTimeUpdate) onTimeUpdate(videoEl.currentTime);
   });
-  videoEl.addEventListener('loadedmetadata', () => {
-    // Fill the dominant dimension: vertical = full height, horizontal = full width
-    if (videoEl.videoHeight > videoEl.videoWidth) {
-      videoEl.style.height = '100%';
-      videoEl.style.width = 'auto';
+  function fitVideo() {
+    const wrapper = videoEl.parentElement;
+    if (!wrapper || !videoEl.videoWidth || !videoEl.videoHeight) return;
+    const ww = wrapper.clientWidth;
+    const wh = wrapper.clientHeight;
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+    if (!ww || !wh) return;
+    if (vh > vw) {
+      // Portrait: fill full height, auto width
+      const newH = wh;
+      const newW = Math.round(newH * vw / vh);
+      videoEl.style.height = newH + 'px';
+      videoEl.style.width = newW + 'px';
     } else {
-      videoEl.style.width = '100%';
-      videoEl.style.height = 'auto';
+      // Landscape: fill full width, auto height
+      const newW = ww;
+      const newH = Math.round(newW * vh / vw);
+      videoEl.style.width = newW + 'px';
+      videoEl.style.height = newH + 'px';
     }
+  }
+
+  videoEl.addEventListener('loadedmetadata', () => {
+    fitVideo();
     updateTime();
     renderMarkers();
   });
+
+  window.addEventListener('resize', fitVideo);
   videoEl.addEventListener('durationchange', () => {
     updateTime();
     renderMarkers();
