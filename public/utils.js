@@ -254,7 +254,7 @@ function getProjectGradient(name) {
  * Build a custom video player controller
  */
 function createVideoPlayer(videoEl, opts = {}) {
-  const { commentsGetter, onTimeUpdate } = opts;
+  const { commentsGetter, onTimeUpdate, onPause } = opts;
 
   const container = videoEl.closest('.video-side') || videoEl.parentElement;
   const progressTrack = container.querySelector('.progress-track');
@@ -390,7 +390,10 @@ function createVideoPlayer(videoEl, opts = {}) {
   }
 
   videoEl.addEventListener('play', updatePlayBtn);
-  videoEl.addEventListener('pause', updatePlayBtn);
+  videoEl.addEventListener('pause', () => {
+    updatePlayBtn();
+    if (onPause) onPause();
+  });
   videoEl.addEventListener('ended', updatePlayBtn);
   videoEl.addEventListener('timeupdate', () => {
     if (!isDragging) updateProgress();

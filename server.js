@@ -83,7 +83,6 @@ async function initDatabase() {
 
   db.run('PRAGMA foreign_keys = ON;');
 
-  // Create tables with new schema (project_id nullable)
   db.run(`
     CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,9 +101,17 @@ async function initDatabase() {
       mime_type TEXT NOT NULL DEFAULT 'video/mp4',
       share_token TEXT UNIQUE NOT NULL,
       allow_comments INTEGER NOT NULL DEFAULT 1,
+      version_group_id TEXT,
+      version_number INTEGER NOT NULL DEFAULT 1,
+      version_name TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add version columns to existing videos table if they don't exist
+  try { db.run(`ALTER TABLE videos ADD COLUMN version_group_id TEXT`); } catch(e) {}
+  try { db.run(`ALTER TABLE videos ADD COLUMN version_number INTEGER NOT NULL DEFAULT 1`); } catch(e) {}
+  try { db.run(`ALTER TABLE videos ADD COLUMN version_name TEXT`); } catch(e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS comments (
@@ -112,9 +119,15 @@ async function initDatabase() {
       video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
       timestamp REAL NOT NULL,
       text TEXT NOT NULL,
+      author TEXT,
+      resolved INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add author and resolved columns to existing comments table if they don't exist
+  try { db.run(`ALTER TABLE comments ADD COLUMN author TEXT`); } catch(e) {}
+  try { db.run(`ALTER TABLE comments ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0`); } catch(e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS attachments (
@@ -127,7 +140,31 @@ async function initDatabase() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_id INTEGER REFERENCES videos(id) ON DELETE CASCADE,
+      project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+      actor TEXT NOT NULL DEFAULT 'admin',
+      action TEXT NOT NULL,
+      detail TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   saveDb();
+}
+
+// ── Helper: log history ───────────────────────────────────────────────────────
+function logHistory(videoId, projectId, actor, action, detail) {
+  try {
+    insertDb(
+      'INSERT INTO history (video_id, project_id, actor, action, detail) VALUES (?, ?, ?, ?, ?)',
+      [videoId || null, projectId || null, actor || 'admin', action, detail || null]
+    );
+  } catch(e) {
+    // non-critical
+  }
 }
 
 // ── Multer ────────────────────────────────────────────────────────────────────
@@ -155,12 +192,15 @@ const uploadAttachments = multer({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
-  secret: 'frame-review-secret-2026',
+  secret: 'feedo-secret-2026',
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
-app.use(express.static(path.join(ROOT, 'public')));
+app.use(express.static(path.join(ROOT, 'public'), {
+  index: false,
+  extensions: []
+}));
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
@@ -247,6 +287,7 @@ app.post('/api/projects', requireAuth, (req, res) => {
   try {
     const id = insertDb('INSERT INTO projects (name) VALUES (?)', [name.trim()]);
     const project = getDb('SELECT p.id, p.name, p.created_at, 0 AS video_count FROM projects p WHERE p.id = ?', [id]);
+    logHistory(null, id, 'admin', 'project_created', `Project "${name.trim()}" created`);
     res.status(201).json(project);
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
@@ -259,8 +300,8 @@ app.get('/api/projects/:id', requireAuth, (req, res) => {
 
   const videos = allDb(`
     SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-           v.share_token, v.allow_comments, v.created_at,
-           COUNT(c.id) AS comment_count
+           v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+           v.created_at, COUNT(c.id) AS comment_count
     FROM videos v
     LEFT JOIN comments c ON c.video_id = v.id
     WHERE v.project_id = ?
@@ -292,8 +333,6 @@ app.delete('/api/projects/:id', requireAuth, (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
   try {
-    // Videos with this project_id will have project_id set to NULL (ON DELETE SET NULL)
-    // But we still need to handle the project deletion cleanly
     runDb('DELETE FROM projects WHERE id = ?', [req.params.id]);
     res.json({ ok: true });
   } catch (e) {
@@ -301,9 +340,24 @@ app.delete('/api/projects/:id', requireAuth, (req, res) => {
   }
 });
 
+// ── Project history ───────────────────────────────────────────────────────────
+app.get('/api/projects/:id/history', requireAuth, (req, res) => {
+  const project = getDb('SELECT id FROM projects WHERE id = ?', [req.params.id]);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  try {
+    const rows = allDb(
+      'SELECT * FROM history WHERE project_id = ? ORDER BY created_at DESC LIMIT 200',
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
 // ── Video routes ──────────────────────────────────────────────────────────────
 
-// GET /api/videos — all videos with optional ?project_id=X filter
 app.get('/api/videos', requireAuth, (req, res) => {
   try {
     let sql, params;
@@ -311,9 +365,8 @@ app.get('/api/videos', requireAuth, (req, res) => {
       if (req.query.project_id === 'null' || req.query.project_id === '') {
         sql = `
           SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.allow_comments, v.created_at,
-                 COUNT(c.id) AS comment_count,
-                 NULL AS project_name
+                 v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+                 v.created_at, COUNT(c.id) AS comment_count, NULL AS project_name
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
           WHERE v.project_id IS NULL
@@ -324,9 +377,8 @@ app.get('/api/videos', requireAuth, (req, res) => {
       } else {
         sql = `
           SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.allow_comments, v.created_at,
-                 COUNT(c.id) AS comment_count,
-                 p.name AS project_name
+                 v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+                 v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
           LEFT JOIN projects p ON p.id = v.project_id
@@ -339,9 +391,8 @@ app.get('/api/videos', requireAuth, (req, res) => {
     } else {
       sql = `
         SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-               v.share_token, v.allow_comments, v.created_at,
-               COUNT(c.id) AS comment_count,
-               p.name AS project_name
+               v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+               v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
         FROM videos v
         LEFT JOIN comments c ON c.video_id = v.id
         LEFT JOIN projects p ON p.id = v.project_id
@@ -357,7 +408,6 @@ app.get('/api/videos', requireAuth, (req, res) => {
   }
 });
 
-// POST /api/videos — standalone video upload (project_id optional)
 app.post('/api/videos', requireAuth, (req, res) => {
   uploadVideo.single('video')(req, res, err => {
     if (err) return res.status(400).json({ error: err.message });
@@ -368,11 +418,12 @@ app.post('/api/videos', requireAuth, (req, res) => {
     const projectId = (req.body.project_id && req.body.project_id !== '' && req.body.project_id !== 'null')
       ? req.body.project_id
       : null;
+    const versionGroupId = uuidv4();
 
     try {
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token) VALUES (?, ?, ?, ?, ?, ?)`,
-        [projectId, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken]
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, 1, 'V1']
       );
       const video = getDb(`
         SELECT v.*, 0 AS comment_count, p.name AS project_name
@@ -380,6 +431,7 @@ app.post('/api/videos', requireAuth, (req, res) => {
         LEFT JOIN projects p ON p.id = v.project_id
         WHERE v.id = ?
       `, [id]);
+      logHistory(id, projectId, 'admin', 'video_uploaded', `Video "${name}" uploaded as V1`);
       res.status(201).json(video);
     } catch (e) {
       res.status(500).json({ error: 'Database error: ' + e.message });
@@ -387,7 +439,6 @@ app.post('/api/videos', requireAuth, (req, res) => {
   });
 });
 
-// POST /api/projects/:id/videos — upload to specific project
 app.post('/api/projects/:id/videos', requireAuth, (req, res) => {
   const project = getDb('SELECT id FROM projects WHERE id = ?', [req.params.id]);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -398,13 +449,15 @@ app.post('/api/projects/:id/videos', requireAuth, (req, res) => {
 
     const name = (req.body.name && req.body.name.trim()) || req.file.originalname.replace(/\.[^.]+$/, '');
     const shareToken = uuidv4();
+    const versionGroupId = uuidv4();
 
     try {
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token) VALUES (?, ?, ?, ?, ?, ?)`,
-        [req.params.id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken]
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.params.id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, 1, 'V1']
       );
       const video = getDb('SELECT *, 0 AS comment_count FROM videos WHERE id = ?', [id]);
+      logHistory(id, req.params.id, 'admin', 'video_uploaded', `Video "${name}" uploaded to project`);
       res.status(201).json(video);
     } catch (e) {
       res.status(500).json({ error: 'Database error: ' + e.message });
@@ -459,7 +512,6 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
   try {
-    // Delete attachment files
     const videoComments = allDb('SELECT id FROM comments WHERE video_id = ?', [req.params.id]);
     for (const comment of videoComments) {
       const attachments = allDb('SELECT filename FROM attachments WHERE comment_id = ?', [comment.id]);
@@ -469,7 +521,6 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
       }
     }
 
-    // Delete video file
     const videoPath = path.join(VIDEOS_DIR, video.filename);
     if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
 
@@ -512,18 +563,149 @@ app.post('/api/videos/:id/comments', requireAuth, (req, res) => {
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
+    const author = 'admin';
     const id = insertDb(
-      'INSERT INTO comments (video_id, timestamp, text) VALUES (?, ?, ?)',
-      [req.params.id, parseFloat(timestamp), text.trim()]
+      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
+      [req.params.id, parseFloat(timestamp), text.trim(), author]
     );
     const comment = getDb('SELECT * FROM comments WHERE id = ?', [id]);
+    logHistory(req.params.id, null, author, 'comment_added', `Comment at ${parseFloat(timestamp).toFixed(1)}s`);
     res.status(201).json({ ...comment, attachments: [] });
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
 });
 
+// ── Video versions ────────────────────────────────────────────────────────────
+app.get('/api/videos/:id/versions', requireAuth, (req, res) => {
+  const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  try {
+    let versions;
+    if (video.version_group_id) {
+      versions = allDb(
+        'SELECT * FROM videos WHERE version_group_id = ? ORDER BY version_number ASC',
+        [video.version_group_id]
+      );
+    } else {
+      versions = [video];
+    }
+    res.json(versions);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
+app.post('/api/videos/:id/versions', requireAuth, (req, res) => {
+  const parentVideo = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
+  if (!parentVideo) return res.status(404).json({ error: 'Video not found' });
+
+  uploadVideo.single('video')(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
+
+    try {
+      // Get the current max version number in this group
+      const versionGroupId = parentVideo.version_group_id || uuidv4();
+
+      // If parent has no version_group_id yet, assign one to it
+      if (!parentVideo.version_group_id) {
+        runDb('UPDATE videos SET version_group_id = ?, version_number = 1, version_name = ? WHERE id = ?',
+          [versionGroupId, 'V1', parentVideo.id]);
+      }
+
+      const maxRow = getDb(
+        'SELECT MAX(version_number) AS max_ver FROM videos WHERE version_group_id = ?',
+        [versionGroupId]
+      );
+      const newVersionNumber = (maxRow && maxRow.max_ver ? maxRow.max_ver : 1) + 1;
+      const newVersionName = `V${newVersionNumber}`;
+
+      const name = (req.body.name && req.body.name.trim()) || parentVideo.name;
+      const shareToken = uuidv4();
+
+      const id = insertDb(
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [parentVideo.project_id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, newVersionNumber, newVersionName]
+      );
+
+      const newVideo = getDb('SELECT * FROM videos WHERE id = ?', [id]);
+      logHistory(id, parentVideo.project_id, 'admin', 'version_created', `${newVersionName} created for "${name}"`);
+      res.status(201).json(newVideo);
+    } catch (e) {
+      res.status(500).json({ error: 'Database error: ' + e.message });
+    }
+  });
+});
+
+app.patch('/api/versions/:id/name', requireAuth, (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+
+  const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Version not found' });
+
+  try {
+    runDb('UPDATE videos SET version_name = ? WHERE id = ?', [name.trim(), req.params.id]);
+    const updated = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
+    logHistory(req.params.id, video.project_id, 'admin', 'version_renamed', `Version renamed to "${name.trim()}"`);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
+// ── Video history ─────────────────────────────────────────────────────────────
+app.get('/api/videos/:id/history', requireAuth, (req, res) => {
+  const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  try {
+    // Get history for all videos in same version group
+    let rows;
+    if (video.version_group_id) {
+      const vids = allDb('SELECT id FROM videos WHERE version_group_id = ?', [video.version_group_id]);
+      const vidIds = vids.map(v => v.id);
+      if (vidIds.length > 0) {
+        const placeholders = vidIds.map(() => '?').join(',');
+        rows = allDb(
+          `SELECT * FROM history WHERE video_id IN (${placeholders}) ORDER BY created_at DESC LIMIT 200`,
+          vidIds
+        );
+      } else {
+        rows = [];
+      }
+    } else {
+      rows = allDb(
+        'SELECT * FROM history WHERE video_id = ? ORDER BY created_at DESC LIMIT 200',
+        [req.params.id]
+      );
+    }
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
 // ── Comment routes ────────────────────────────────────────────────────────────
+app.put('/api/comments/:id', requireAuth, (req, res) => {
+  const comment = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+  // Only admin (logged-in user) can edit
+  const { text } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
+
+  try {
+    runDb('UPDATE comments SET text = ? WHERE id = ?', [text.trim(), req.params.id]);
+    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
 app.delete('/api/comments/:id', requireAuth, (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
@@ -537,6 +719,20 @@ app.delete('/api/comments/:id', requireAuth, (req, res) => {
   runDb('DELETE FROM attachments WHERE comment_id = ?', [req.params.id]);
   runDb('DELETE FROM comments WHERE id = ?', [req.params.id]);
   res.json({ ok: true });
+});
+
+app.patch('/api/comments/:id/resolve', requireAuth, (req, res) => {
+  const comment = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+  try {
+    const newResolved = comment.resolved ? 0 : 1;
+    runDb('UPDATE comments SET resolved = ? WHERE id = ?', [newResolved, req.params.id]);
+    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
 });
 
 // ── Attachment routes ─────────────────────────────────────────────────────────
@@ -589,7 +785,16 @@ app.get('/api/share/:token', (req, res) => {
     attachments: allDb('SELECT * FROM attachments WHERE comment_id = ? ORDER BY created_at ASC', [c.id])
   }));
 
-  res.json({ video, project, comments: commentsWithAttachments, allow_comments: video.allow_comments });
+  // Get versions in same group
+  let versions = [];
+  if (video.version_group_id) {
+    versions = allDb(
+      'SELECT id, version_number, version_name, share_token FROM videos WHERE version_group_id = ? ORDER BY version_number ASC',
+      [video.version_group_id]
+    );
+  }
+
+  res.json({ video, project, comments: commentsWithAttachments, allow_comments: video.allow_comments, versions });
 });
 
 app.post('/api/share/:token/comments', (req, res) => {
@@ -597,17 +802,85 @@ app.post('/api/share/:token/comments', (req, res) => {
   if (!video) return res.status(404).json({ error: 'Share link not found' });
   if (!video.allow_comments) return res.status(403).json({ error: 'Comments are disabled for this video' });
 
-  const { timestamp, text } = req.body;
+  const { timestamp, text, guest_id } = req.body;
   if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
+    const author = guest_id ? `guest:${guest_id}` : 'guest';
     const id = insertDb(
-      'INSERT INTO comments (video_id, timestamp, text) VALUES (?, ?, ?)',
-      [video.id, parseFloat(timestamp), text.trim()]
+      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
+      [video.id, parseFloat(timestamp), text.trim(), author]
     );
     const comment = getDb('SELECT * FROM comments WHERE id = ?', [id]);
     res.status(201).json({ ...comment, attachments: [] });
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
+// Edit comment via share link (requires allow_comments + ownership by guest_id)
+app.put('/api/share/:token/comments/:id', (req, res) => {
+  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
+  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+
+  const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+  const { text, guest_id } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
+  if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
+
+  const expectedAuthor = `guest:${guest_id}`;
+  if (comment.author !== expectedAuthor) return res.status(403).json({ error: 'Cannot edit this comment' });
+
+  try {
+    runDb('UPDATE comments SET text = ? WHERE id = ?', [text.trim(), req.params.id]);
+    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
+// Delete comment via share link
+app.delete('/api/share/:token/comments/:id', (req, res) => {
+  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
+  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+
+  const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+  const { guest_id } = req.query;
+  if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
+
+  const expectedAuthor = `guest:${guest_id}`;
+  if (comment.author !== expectedAuthor) return res.status(403).json({ error: 'Cannot delete this comment' });
+
+  try {
+    runDb('DELETE FROM comments WHERE id = ?', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Database error: ' + e.message });
+  }
+});
+
+// Resolve comment via share link
+app.patch('/api/share/:token/comments/:id/resolve', (req, res) => {
+  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
+  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+
+  const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+  try {
+    const newResolved = comment.resolved ? 0 : 1;
+    runDb('UPDATE comments SET resolved = ? WHERE id = ?', [newResolved, req.params.id]);
+    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
+    res.json(updated);
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
@@ -636,15 +909,25 @@ app.get('/api/share/:token/attachments/:filename', (req, res) => {
 });
 
 // ── HTML page routes ──────────────────────────────────────────────────────────
+function requireAuthPage(req, res, next) {
+  if (req.session && req.session.authenticated) return next();
+  res.redirect('/login');
+}
+
 app.get('/login', (req, res) => {
+  if (req.session && req.session.authenticated) return res.redirect('/');
   res.sendFile(path.join(ROOT, 'public', 'login.html'));
 });
 
-app.get('/project/:id', (req, res) => {
+app.get('/', requireAuthPage, (req, res) => {
+  res.sendFile(path.join(ROOT, 'public', 'index.html'));
+});
+
+app.get('/project/:id', requireAuthPage, (req, res) => {
   res.sendFile(path.join(ROOT, 'public', 'project.html'));
 });
 
-app.get('/video/:id', (req, res) => {
+app.get('/video/:id', requireAuthPage, (req, res) => {
   res.sendFile(path.join(ROOT, 'public', 'video.html'));
 });
 

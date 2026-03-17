@@ -8,13 +8,12 @@
 </head>
 <body>
 
-<div class="app-layout" id="app-layout">
+<div class="app-layout" id="app-layout" style="display:none;">
   <div id="sidebar-container"></div>
   <div class="main-content">
     <div class="page-header">
-      <h1 id="videos-heading">All Videos</h1>
+      <h1>Dashboard</h1>
       <div style="display:flex; align-items:center; gap:10px;">
-        <span id="video-count" style="font-size:13px; color:var(--text-secondary);"></span>
         <button class="btn btn-primary" id="new-video-btn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -24,10 +23,57 @@
         <button class="btn btn-ghost" id="logout-btn">Sign Out</button>
       </div>
     </div>
-    <div id="videos-grid" class="projects-grid">
-      <div style="grid-column:1/-1; text-align:center; padding:60px; color:var(--text-secondary);">
-        <div class="spinner" style="margin: 0 auto 12px;"></div>
-        <div>Loading videos…</div>
+
+    <div id="dashboard-content">
+      <!-- Projects Section -->
+      <div class="dashboard-section" id="projects-section">
+        <div class="dashboard-section-header">
+          <h2 class="dashboard-section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+            </svg>
+            Projects
+          </h2>
+          <span id="project-count" class="dashboard-section-count"></span>
+          <button class="btn btn-secondary btn-sm" id="new-project-btn" style="margin-left:auto;">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            New Project
+          </button>
+        </div>
+        <div id="projects-grid" class="projects-grid">
+          <div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--text-secondary);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Loading projects…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Videos Section -->
+      <div class="dashboard-section" id="videos-section">
+        <div class="dashboard-section-header">
+          <h2 class="dashboard-section-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+              <line x1="7" y1="2" x2="7" y2="22"/>
+              <line x1="17" y1="2" x2="17" y2="22"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <line x1="2" y1="7" x2="7" y2="7"/>
+              <line x1="2" y1="17" x2="7" y2="17"/>
+              <line x1="17" y1="17" x2="22" y2="17"/>
+              <line x1="17" y1="7" x2="22" y2="7"/>
+            </svg>
+            All Videos
+          </h2>
+          <span id="video-count" class="dashboard-section-count"></span>
+        </div>
+        <div id="videos-grid" class="projects-grid">
+          <div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--text-secondary);">
+            <div class="spinner" style="margin: 0 auto 12px;"></div>
+            <div>Loading videos…</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>

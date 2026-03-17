@@ -13,7 +13,7 @@
   <!-- Header -->
   <header class="share-header">
     <div class="share-logo">
-      <img src="/logo.png" alt="Feedo" style="height:22px; width:22px; border-radius:5px; object-fit:cover; display:block;" />
+      <img src="/logo.png" alt="Feedo" style="height:22px; width:22px; object-fit:contain; display:block;" />
       Feedo
     </div>
     <div style="width:1px; height:16px; background:var(--border);"></div>
@@ -21,7 +21,7 @@
       <div class="share-project-breadcrumb" id="project-breadcrumb">Loading…</div>
       <div class="share-video-name" id="video-name">Loading…</div>
     </div>
-    <div class="share-badge">Shared View</div>
+    <div class="share-badge" id="share-badge">Shared View</div>
   </header>
 
   <!-- Workspace -->
@@ -67,6 +67,11 @@
           </button>
         </div>
       </div>
+
+      <!-- Version Bar (shown if versions exist) -->
+      <div class="version-bar" id="version-bar" style="display:none;">
+        <div class="version-tabs" id="version-tabs"></div>
+      </div>
     </div>
 
     <!-- Comments Panel -->
@@ -75,6 +80,11 @@
         <div class="panel-title">
           Comments
           <span class="comment-count-badge" id="comment-count-badge">0</span>
+        </div>
+        <div class="comment-filter-row" id="comment-filter-row" style="display:none;">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="open">Open</button>
+          <button class="filter-btn" data-filter="resolved">Resolved</button>
         </div>
       </div>
 

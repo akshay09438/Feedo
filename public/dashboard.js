@@ -1,15 +1,19 @@
-/* ── dashboard.js — main dashboard (all videos view) ─────────────────────────── */
+/* ── dashboard.js — main dashboard (projects + all videos) ─────────────────── */
 (function () {
   'use strict';
 
-  const appLayout   = document.getElementById('app-layout');
-  const videosGrid  = document.getElementById('videos-grid');
-  const videoCount  = document.getElementById('video-count');
-  const newVideoBtn = document.getElementById('new-video-btn');
-  const logoutBtn   = document.getElementById('logout-btn');
-  const fileInput   = document.getElementById('file-input');
+  const appLayout    = document.getElementById('app-layout');
+  const projectsGrid = document.getElementById('projects-grid');
+  const videosGrid   = document.getElementById('videos-grid');
+  const videoCount   = document.getElementById('video-count');
+  const projectCount = document.getElementById('project-count');
+  const newVideoBtn  = document.getElementById('new-video-btn');
+  const newProjectBtn = document.getElementById('new-project-btn');
+  const logoutBtn    = document.getElementById('logout-btn');
+  const fileInput    = document.getElementById('file-input');
 
-  let videos = [];
+  let videos   = [];
+  let projects = [];
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
@@ -27,44 +31,126 @@
     }
 
     appLayout.style.display = 'flex';
-    await loadVideos();
+    await Promise.all([loadProjects(), loadVideos()]);
     initSidebar(null, null);
 
     newVideoBtn.addEventListener('click', openUploadModal);
+    newProjectBtn.addEventListener('click', openNewProjectModal);
     logoutBtn.addEventListener('click', async () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       window.location.href = '/login';
     });
   }
 
+  // ── Load Projects ─────────────────────────────────────────────────────────
+  async function loadProjects() {
+    try {
+      const res = await fetch('/api/projects');
+      if (res.status === 401) { window.location.href = '/login'; return; }
+      projects = await res.json();
+      renderProjects();
+    } catch (e) {
+      projectsGrid.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--danger);">Failed to load projects.</div>`;
+    }
+  }
+
   // ── Load Videos ───────────────────────────────────────────────────────────
   async function loadVideos() {
-    videosGrid.innerHTML = `
-      <div style="grid-column:1/-1; text-align:center; padding:60px; color:var(--text-secondary);">
-        <div class="spinner" style="margin: 0 auto 12px;"></div>
-        <div>Loading videos…</div>
-      </div>`;
-
     try {
       const res = await fetch('/api/videos');
       if (res.status === 401) { window.location.href = '/login'; return; }
       videos = await res.json();
       renderVideos();
     } catch (e) {
-      videosGrid.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:60px; color:var(--danger);">Failed to load videos.</div>`;
+      videosGrid.innerHTML = `<div style="grid-column:1/-1; text-align:center; padding:40px; color:var(--danger);">Failed to load videos.</div>`;
     }
+  }
+
+  // ── Render Projects Grid ──────────────────────────────────────────────────
+  function renderProjects() {
+    const count = projects.length;
+    projectCount.textContent = count === 0 ? '' : `${count} project${count !== 1 ? 's' : ''}`;
+
+    if (count === 0) {
+      projectsGrid.innerHTML = `
+        <div class="empty-state" style="padding:40px 24px;">
+          <div class="empty-icon">📁</div>
+          <div class="empty-title">No projects yet</div>
+          <div class="empty-sub">Create a project to organise your videos.</div>
+          <button class="btn btn-secondary" id="empty-new-project-btn" style="margin-top:12px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            New Project
+          </button>
+        </div>`;
+      const btn = document.getElementById('empty-new-project-btn');
+      if (btn) btn.addEventListener('click', openNewProjectModal);
+      return;
+    }
+
+    projectsGrid.innerHTML = '';
+    projects.forEach(p => projectsGrid.appendChild(createProjectCard(p)));
+  }
+
+  function createProjectCard(project) {
+    const card = document.createElement('div');
+    card.className = 'card project-card';
+    card.dataset.id = project.id;
+
+    const gradient = getProjectGradient(project.name);
+    const videoCount = project.video_count || 0;
+    const date = formatDate(project.created_at);
+    const initials = project.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+
+    card.innerHTML = `
+      <div class="card-thumbnail" style="background: ${gradient}">
+        <div class="card-initials">${escapeHtml(initials)}</div>
+        <div class="card-video-count-badge">${videoCount} video${videoCount !== 1 ? 's' : ''}</div>
+        <div class="card-thumb-actions">
+          <button class="card-thumb-btn danger delete-project-btn" title="Delete project" data-id="${project.id}" data-name="${escapeHtml(project.name)}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="card-info">
+        <div class="card-name">${escapeHtml(project.name)}</div>
+        <div class="card-meta">
+          <span>${date}</span>
+          <span style="font-size:12px; color:var(--text-muted);">${videoCount} video${videoCount !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="card-actions-row">
+          <button class="btn-icon delete-project-btn" data-id="${project.id}" data-name="${escapeHtml(project.name)}" title="Delete project">🗑</button>
+        </div>
+      </div>
+    `;
+
+    card.addEventListener('click', e => {
+      if (e.target.closest('.delete-project-btn') || e.target.closest('.card-thumb-btn')) return;
+      window.location.href = `/project/${project.id}`;
+    });
+
+    card.querySelectorAll('.delete-project-btn').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        confirmDeleteProject(btn.dataset.id, btn.dataset.name);
+      });
+    });
+
+    return card;
   }
 
   // ── Render Videos Grid ────────────────────────────────────────────────────
   function renderVideos() {
-    if (!Array.isArray(videos)) return;
-
     const count = videos.length;
     videoCount.textContent = count === 0 ? '' : `${count} video${count !== 1 ? 's' : ''}`;
 
     if (count === 0) {
       videosGrid.innerHTML = `
-        <div class="empty-state">
+        <div class="empty-state" style="padding:40px 24px;">
           <div class="empty-icon">🎬</div>
           <div class="empty-title">No videos yet</div>
           <div class="empty-sub">Upload your first video to start getting frame-accurate feedback.</div>
@@ -202,6 +288,61 @@
     });
   }
 
+  // ── Delete Project ────────────────────────────────────────────────────────
+  function confirmDeleteProject(id, name) {
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <div class="modal-header">
+        <span class="modal-title">Delete Project</span>
+        <button class="modal-close" id="modal-close-btn">&times;</button>
+      </div>
+      <p style="color:var(--text-secondary); font-size:14px; margin-bottom:20px; line-height:1.6;">
+        Are you sure you want to delete the project <strong style="color:var(--text-primary);">${escapeHtml(name)}</strong>?
+        Videos in this project will become standalone. This cannot be undone.
+      </p>
+      <div class="modal-footer" style="margin-top:0;">
+        <button class="btn btn-secondary" id="cancel-delete">Cancel</button>
+        <button class="btn btn-primary" id="confirm-delete" style="background:var(--danger);">Delete Project</button>
+      </div>
+    `;
+
+    const modal = showModal(content);
+    content.querySelector('#modal-close-btn').addEventListener('click', () => modal.close());
+    content.querySelector('#cancel-delete').addEventListener('click', () => modal.close());
+    content.querySelector('#confirm-delete').addEventListener('click', async () => {
+      const btn = content.querySelector('#confirm-delete');
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          modal.close();
+          showToast('Project deleted', 'success');
+          projects = projects.filter(p => String(p.id) !== String(id));
+          // Update any videos that belonged to this project to show as standalone
+          videos.forEach(v => {
+            if (String(v.project_id) === String(id)) {
+              v.project_id = null;
+              v.project_name = null;
+            }
+          });
+          renderProjects();
+          renderVideos();
+          window.dispatchEvent(new CustomEvent('feedo:project-deleted', { detail: { id: String(id) } }));
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to delete project', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Delete Project';
+        }
+      } catch (e) {
+        showToast('Network error', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Delete Project';
+      }
+    });
+  }
+
   // ── Delete Video ──────────────────────────────────────────────────────────
   function confirmDeleteVideo(id, name) {
     const content = document.createElement('div');
@@ -234,6 +375,7 @@
           showToast('Video deleted', 'success');
           videos = videos.filter(v => String(v.id) !== String(id));
           renderVideos();
+          window.dispatchEvent(new CustomEvent('feedo:video-deleted', { detail: { id: String(id) } }));
         } else {
           const err = await res.json();
           showToast(err.error || 'Failed to delete video', 'error');
@@ -248,10 +390,71 @@
     });
   }
 
+  // ── New Project Modal ─────────────────────────────────────────────────────
+  function openNewProjectModal() {
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <div class="modal-header">
+        <span class="modal-title">New Project</span>
+        <button class="modal-close" id="proj-close">&times;</button>
+      </div>
+      <div class="form-group" style="margin-bottom:20px;">
+        <label class="form-label">Project Name</label>
+        <input class="form-input" type="text" id="proj-name-input" placeholder="Enter project name…" autofocus />
+      </div>
+      <div class="modal-footer" style="margin-top:0;">
+        <button class="btn btn-secondary" id="proj-cancel">Cancel</button>
+        <button class="btn btn-primary" id="proj-submit">Create Project</button>
+      </div>
+    `;
+
+    const modal = showModal(content);
+    const input = content.querySelector('#proj-name-input');
+    setTimeout(() => input.focus(), 50);
+
+    content.querySelector('#proj-close').addEventListener('click', () => modal.close());
+    content.querySelector('#proj-cancel').addEventListener('click', () => modal.close());
+
+    async function doCreate() {
+      const name = input.value.trim();
+      if (!name) { input.focus(); showToast('Please enter a project name', 'error'); return; }
+      const btn = content.querySelector('#proj-submit');
+      btn.disabled = true;
+      btn.textContent = 'Creating…';
+      try {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+          const project = await res.json();
+          modal.close();
+          showToast('Project created', 'success');
+          window.location.href = `/project/${project.id}`;
+        } else {
+          const err = await res.json();
+          showToast(err.error || 'Failed to create project', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Create Project';
+        }
+      } catch (e) {
+        showToast('Network error', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Create Project';
+      }
+    }
+
+    content.querySelector('#proj-submit').addEventListener('click', doCreate);
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') doCreate();
+      if (e.key === 'Escape') modal.close();
+    });
+  }
+
   // ── Upload Modal (New Video) ───────────────────────────────────────────────
   async function openUploadModal() {
-    // Fetch projects for dropdown
-    let projects = [];
+    // Refresh projects for dropdown
     try {
       const res = await fetch('/api/projects');
       if (res.ok) projects = await res.json();
@@ -399,6 +602,15 @@
           showToast('Video uploaded!', 'success');
           videos.unshift(video);
           renderVideos();
+          window.dispatchEvent(new CustomEvent('feedo:video-added', { detail: { video } }));
+          // If assigned to a project, update project video count
+          if (video.project_id) {
+            const proj = projects.find(p => String(p.id) === String(video.project_id));
+            if (proj) {
+              proj.video_count = (proj.video_count || 0) + 1;
+              renderProjects();
+            }
+          }
         } else {
           let msg = 'Upload failed';
           try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) {}
@@ -425,6 +637,25 @@
 
   // Expose openUploadModal globally so sidebar.js "New Video" button can call it
   window.openUploadModal = openUploadModal;
+
+  // ── Sync with sidebar deletions ──────────────────────────────────────────
+  window.addEventListener('feedo:video-deleted', e => {
+    const id = e.detail.id;
+    if (videos.some(v => String(v.id) === String(id))) {
+      videos = videos.filter(v => String(v.id) !== String(id));
+      renderVideos();
+    }
+  });
+
+  window.addEventListener('feedo:project-deleted', e => {
+    const id = e.detail.id;
+    if (projects.some(p => String(p.id) === String(id))) {
+      projects = projects.filter(p => String(p.id) !== String(id));
+      videos.forEach(v => { if (String(v.project_id) === String(id)) { v.project_id = null; v.project_name = null; } });
+      renderProjects();
+      renderVideos();
+    }
+  });
 
   // Init
   init();

@@ -78,14 +78,48 @@
             </button>
           </div>
         </div>
+
+        <!-- Version Bar -->
+        <div class="version-bar" id="version-bar">
+          <div class="version-tabs" id="version-tabs">
+            <!-- tabs + add button rendered by JS -->
+          </div>
+        </div>
+
+        <!-- History Panel -->
+        <div class="history-panel" id="history-panel">
+          <div class="history-panel-header" id="history-panel-header">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            History
+            <svg class="history-chevron" id="history-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+          </div>
+          <div class="history-panel-body" id="history-panel-body" style="display:none;">
+            <div class="history-list" id="history-list">
+              <div style="text-align:center; padding:20px; color:var(--text-secondary); font-size:12px;">Loading…</div>
+            </div>
+          </div>
+        </div>
       </div>
 
+      <!-- Resize Handle -->
+      <div class="panel-resize-handle" id="panel-resize-handle"></div>
+
       <!-- Comments Panel -->
-      <div class="comments-panel">
+      <div class="comments-panel" id="comments-panel">
         <div class="panel-header">
           <div class="panel-title">
             Comments
             <span class="comment-count-badge" id="comment-count-badge">0</span>
+          </div>
+          <div class="comment-filter-row" id="comment-filter-row">
+            <button class="filter-btn active" data-filter="all" id="filter-all">All</button>
+            <button class="filter-btn" data-filter="open" id="filter-open">Open</button>
+            <button class="filter-btn" data-filter="resolved" id="filter-resolved">Resolved</button>
           </div>
         </div>
 
@@ -131,6 +165,7 @@
   </div><!-- /video-page -->
 </div><!-- /app-layout -->
 
+<input type="file" id="version-file-input" accept="video/*" style="display:none;" />
 <div id="toast-container"></div>
 <div id="modal-backdrop"></div>
 

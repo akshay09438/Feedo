@@ -5,7 +5,7 @@
  * @param {number|null} activeProjectId
  * @param {number|null} activeVideoId
  */
-async function initSidebar(activeProjectId, activeVideoId) {
+async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId) {
   const container = document.getElementById('sidebar-container');
   if (!container) return;
 
@@ -122,6 +122,27 @@ async function initSidebar(activeProjectId, activeVideoId) {
 
   container.appendChild(sidebar);
 
+  // Sidebar collapse toggle button
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'sidebar-toggle-btn';
+  toggleBtn.title = 'Collapse sidebar';
+  toggleBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`;
+  container.appendChild(toggleBtn);
+
+  toggleBtn.addEventListener('click', () => {
+    const collapsed = sidebar.classList.toggle('collapsed');
+    toggleBtn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    toggleBtn.innerHTML = collapsed
+      ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`
+      : `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`;
+    // Fire resize events throughout the CSS transition so video re-fits in real time
+    const start = performance.now();
+    (function fireResize() {
+      window.dispatchEvent(new Event('resize'));
+      if (performance.now() - start < 250) requestAnimationFrame(fireResize);
+    })();
+  });
+
   const searchInput          = sidebar.querySelector('#sidebar-search-input');
   const projectsSectionHeader = sidebar.querySelector('#projects-section-header');
   const projectsSectionContent = sidebar.querySelector('#projects-section-content');
@@ -201,8 +222,11 @@ async function initSidebar(activeProjectId, activeVideoId) {
       item.className = 'sidebar-project-item' + (isActive ? ' active' : '');
       item.dataset.projectId = project.id;
 
-      // Get videos for this project from allVideos
-      const projectVideos = allVideos.filter(v => v.project_id && String(v.project_id) === String(project.id));
+      // Get primary videos (V1 only) for this project from allVideos
+      const projectVideos = allVideos.filter(v =>
+        v.project_id && String(v.project_id) === String(project.id) &&
+        (!v.version_number || v.version_number === 1)
+      );
 
       item.innerHTML = `
         <div class="sidebar-project-row">
@@ -215,7 +239,7 @@ async function initSidebar(activeProjectId, activeVideoId) {
         <div class="sidebar-project-children" style="display:none;">
           ${projectVideos.length > 0
             ? projectVideos.map(v => `
-              <div class="sidebar-video-item${activeVideoId && String(v.id) === String(activeVideoId) ? ' active' : ''}" data-video-id="${v.id}">
+              <div class="sidebar-video-item${activeVideoId && (String(v.id) === String(activeVideoId) || (activeVersionGroupId && v.version_group_id && v.version_group_id === activeVersionGroupId)) ? ' active' : ''}" data-video-id="${v.id}">
                 <span class="sidebar-video-item-icon">└</span>
                 <span class="sidebar-video-item-name">${escapeHtml(v.name)}</span>
                 <button class="sidebar-delete-btn sidebar-delete-video-btn" data-id="${v.id}" data-name="${escapeHtml(v.name)}" title="Delete video">🗑</button>
@@ -264,6 +288,7 @@ async function initSidebar(activeProjectId, activeVideoId) {
                 projects = projects.filter(p => String(p.id) !== String(project.id));
                 renderProjects(searchInput.value);
                 renderVideos(searchInput.value);
+                window.dispatchEvent(new CustomEvent('feedo:project-deleted', { detail: { id: String(project.id) } }));
                 if (String(activeProjectId) === String(project.id)) {
                   window.location.href = '/';
                 }
@@ -288,6 +313,7 @@ async function initSidebar(activeProjectId, activeVideoId) {
                   allVideos = allVideos.filter(v => String(v.id) !== String(vid));
                   renderProjects(searchInput.value);
                   renderVideos(searchInput.value);
+                  window.dispatchEvent(new CustomEvent('feedo:video-deleted', { detail: { id: String(vid) } }));
                   if (String(activeVideoId) === String(vid)) {
                     window.location.href = '/';
                   }
@@ -317,9 +343,11 @@ async function initSidebar(activeProjectId, activeVideoId) {
     const q = (filterText || '').toLowerCase().trim();
     videosList.innerHTML = '';
 
+    // Only show primary versions (V1) in sidebar — other versions accessed via version tabs
+    const primaryVideos = allVideos.filter(v => !v.version_number || v.version_number === 1);
     const filtered = q
-      ? allVideos.filter(v => v.name.toLowerCase().includes(q))
-      : allVideos;
+      ? primaryVideos.filter(v => v.name.toLowerCase().includes(q))
+      : primaryVideos;
 
     if (filtered.length === 0) {
       videosList.innerHTML = `<div style="padding:6px 12px; font-size:12px; color:var(--text-muted); font-style:italic;">No videos</div>`;
@@ -327,7 +355,10 @@ async function initSidebar(activeProjectId, activeVideoId) {
     }
 
     filtered.forEach(v => {
-      const isActive = activeVideoId && String(v.id) === String(activeVideoId);
+      const isActive = activeVideoId && (
+        String(v.id) === String(activeVideoId) ||
+        (activeVersionGroupId && v.version_group_id && v.version_group_id === activeVersionGroupId)
+      );
       const item = document.createElement('div');
       item.className = 'sidebar-video-list-item' + (isActive ? ' active' : '');
       item.dataset.videoId = v.id;
@@ -354,6 +385,7 @@ async function initSidebar(activeProjectId, activeVideoId) {
                 allVideos = allVideos.filter(vv => String(vv.id) !== String(vid));
                 renderVideos(searchInput.value);
                 renderProjects(searchInput.value);
+                window.dispatchEvent(new CustomEvent('feedo:video-deleted', { detail: { id: String(vid) } }));
                 if (String(activeVideoId) === String(vid)) {
                   window.location.href = '/';
                 }
@@ -370,6 +402,31 @@ async function initSidebar(activeProjectId, activeVideoId) {
 
   renderProjects('');
   renderVideos('');
+
+  // ── Sync with dashboard/other panels ────────────────────────────────────
+  window.addEventListener('feedo:video-added', e => {
+    const v = e.detail.video;
+    if (!allVideos.some(existing => String(existing.id) === String(v.id))) {
+      allVideos.unshift(v);
+    }
+    renderVideos(searchInput.value);
+    renderProjects(searchInput.value);
+  });
+
+  window.addEventListener('feedo:video-deleted', e => {
+    const id = e.detail.id;
+    allVideos = allVideos.filter(v => String(v.id) !== String(id));
+    renderVideos(searchInput.value);
+    renderProjects(searchInput.value);
+  });
+
+  window.addEventListener('feedo:project-deleted', e => {
+    const id = e.detail.id;
+    allVideos.forEach(v => { if (String(v.project_id) === String(id)) { v.project_id = null; v.project_name = null; } });
+    projects = projects.filter(p => String(p.id) !== String(id));
+    renderProjects(searchInput.value);
+    renderVideos(searchInput.value);
+  });
 
   // ── Search ───────────────────────────────────────────────────────────────
   searchInput.addEventListener('input', () => {

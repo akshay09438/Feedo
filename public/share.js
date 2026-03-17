@@ -10,6 +10,17 @@
     throw new Error('No share token');
   }
 
+  // ── Guest identity (persisted in localStorage) ────────────────────────────
+  function getGuestId() {
+    let id = localStorage.getItem('feedo_guest_id');
+    if (!id) {
+      id = 'g_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('feedo_guest_id', id);
+    }
+    return id;
+  }
+  const GUEST_ID = getGuestId();
+
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const videoEl           = document.getElementById('video-el');
   const projectBreadcrumb = document.getElementById('project-breadcrumb');
@@ -22,12 +33,19 @@
   const submitComment     = document.getElementById('submit-comment');
   const commentAtBadge    = document.getElementById('comment-at-badge');
   const commentAtTime     = document.getElementById('comment-at-time');
+  const versionBar        = document.getElementById('version-bar');
+  const versionTabs       = document.getElementById('version-tabs');
+  const shareBadge        = document.getElementById('share-badge');
+  const filterRow         = document.getElementById('comment-filter-row');
 
   // ── State ─────────────────────────────────────────────────────────────────
   let comments       = [];
+  let versions       = [];
   let player         = null;
   let allowComments  = false;
   let capturedTimestamp = 0;
+  let commentFilter  = 'all';
+  let currentVideoData = null;
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
@@ -48,28 +66,49 @@
       const video = data.video;
       const project = data.project;
       comments = data.comments || [];
+      versions = data.versions || [];
       allowComments = !!data.allow_comments;
+      currentVideoData = video;
 
       document.title = `${video.name} — Feedo`;
       videoNameEl.textContent = video.name;
       projectBreadcrumb.textContent = project ? project.name : 'Feedo';
+
+      if (allowComments) {
+        shareBadge.textContent = 'Shared · Can Comment';
+      } else {
+        shareBadge.textContent = 'View Only';
+      }
 
       // Set video source
       videoEl.src = `/api/share/${token}/stream`;
 
       // Init player
       player = createVideoPlayer(videoEl, {
-        commentsGetter: () => comments
+        commentsGetter: () => comments,
+        onPause: () => {
+          if (allowComments && commentText) {
+            setTimeout(() => { if (videoEl.paused) commentText.focus(); }, 50);
+          }
+        }
       });
 
       // Show/hide comment form
       if (allowComments) {
         addCommentArea.style.display = 'block';
         viewOnlyNote.style.display = 'none';
+        filterRow.style.display = 'flex';
         setupCommentForm();
+        setupCommentFilters();
       } else {
         addCommentArea.style.display = 'none';
         viewOnlyNote.style.display = 'block';
+      }
+
+      // Render versions bar
+      if (versions.length > 1) {
+        versionBar.style.display = 'flex';
+        renderVersionTabs(video.id);
       }
 
       renderComments();
@@ -78,54 +117,164 @@
     }
   }
 
+  // ── Version Bar ───────────────────────────────────────────────────────────
+  function renderVersionTabs(activeVideoId) {
+    versionTabs.innerHTML = '';
+    versions.forEach(v => {
+      const tab = document.createElement('div');
+      tab.className = 'version-tab' + (String(v.id) === String(activeVideoId) ? ' active' : '');
+
+      const label = document.createElement('span');
+      label.className = 'version-tab-label';
+      label.textContent = v.version_name || `V${v.version_number}`;
+      tab.appendChild(label);
+      versionTabs.appendChild(tab);
+
+      if (!tab.classList.contains('active')) {
+        tab.addEventListener('click', () => {
+          window.location.href = `/share/${v.share_token}`;
+        });
+      }
+    });
+  }
+
+  // ── Comment Filters ───────────────────────────────────────────────────────
+  function setupCommentFilters() {
+    filterRow.addEventListener('click', e => {
+      const btn = e.target.closest('.filter-btn');
+      if (!btn) return;
+      commentFilter = btn.dataset.filter;
+      filterRow.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderComments();
+    });
+  }
+
   // ── Render Comments ───────────────────────────────────────────────────────
   function renderComments() {
+    const filtered = comments.filter(c => {
+      if (commentFilter === 'open') return !c.resolved;
+      if (commentFilter === 'resolved') return !!c.resolved;
+      return true;
+    });
+
     commentCountBadge.textContent = comments.length;
 
-    if (comments.length === 0) {
+    if (filtered.length === 0) {
       commentsList.innerHTML = `
         <div class="no-comments">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
           </svg>
-          <p>${allowComments ? 'No comments yet. Add the first one!' : 'No comments on this video yet.'}</p>
+          <p>${comments.length === 0
+            ? (allowComments ? 'No comments yet. Add the first one!' : 'No comments on this video yet.')
+            : `No ${commentFilter === 'resolved' ? 'resolved' : 'open'} comments.`}</p>
         </div>`;
+      if (player) player.renderMarkers();
       return;
     }
 
     commentsList.innerHTML = '';
-    comments.forEach(c => commentsList.appendChild(buildCommentCard(c)));
+    filtered.forEach(c => commentsList.appendChild(buildCommentCard(c)));
 
     if (player) player.renderMarkers();
   }
 
   function buildCommentCard(comment) {
     const card = document.createElement('div');
-    card.className = 'comment-card';
+    card.className = 'comment-card' + (comment.resolved ? ' comment-resolved' : '');
     card.dataset.id = comment.id;
 
-    const date = new Date(comment.created_at).toLocaleString(undefined, {
+    const rawTs = comment.created_at || '';
+    const ts = rawTs.includes('T') || rawTs.endsWith('Z') ? rawTs : rawTs.replace(' ', 'T') + 'Z';
+    const date = new Date(ts).toLocaleString(undefined, {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
     });
 
+    // Determine if this guest can edit/delete this comment
+    const isMyComment = allowComments && comment.author === `guest:${GUEST_ID}`;
+    const isAdminComment = comment.author === 'admin';
+
     card.innerHTML = `
-      <div class="comment-header">
-        <span class="timestamp-pill" data-ts="${comment.timestamp}">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-            <circle cx="12" cy="12" r="10"/>
-            <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+      <div class="comment-main-row">
+        ${allowComments ? `
+        <button class="comment-resolve-btn${comment.resolved ? ' resolved' : ''}" data-id="${comment.id}" title="${comment.resolved ? 'Mark as open' : 'Mark as resolved'}">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
           </svg>
-          ${formatTime(comment.timestamp)}
-        </span>
+        </button>` : '<div style="width:22px;flex-shrink:0;"></div>'}
+        <div class="comment-body">
+          <div class="comment-header">
+            <span class="timestamp-pill" data-ts="${comment.timestamp}">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+              </svg>
+              ${formatTime(comment.timestamp)}
+            </span>
+            <span class="comment-author-label">${isAdminComment ? 'Admin' : (isMyComment ? 'You' : 'Guest')}</span>
+            ${isMyComment ? `
+            <div class="comment-actions">
+              <button class="comment-edit-btn" data-id="${comment.id}" title="Edit comment">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </button>
+              <button class="comment-delete-btn" data-id="${comment.id}" title="Delete comment">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+                </svg>
+              </button>
+            </div>` : ''}
+          </div>
+          <div class="comment-text" id="comment-text-${comment.id}">${escapeHtml(comment.text)}</div>
+          ${isMyComment ? `
+          <div class="comment-edit-form" id="comment-edit-form-${comment.id}" style="display:none;">
+            <textarea class="comment-edit-textarea" id="comment-edit-input-${comment.id}">${escapeHtml(comment.text)}</textarea>
+            <div class="comment-edit-actions">
+              <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px;" id="comment-edit-cancel-${comment.id}">Cancel</button>
+              <button class="btn btn-primary" style="font-size:12px;padding:4px 10px;" id="comment-edit-save-${comment.id}">Save</button>
+            </div>
+          </div>` : ''}
+          <div class="comment-date">${date}</div>
+          <div class="comment-attachments" id="att-${comment.id}"></div>
+        </div>
       </div>
-      <div class="comment-text">${escapeHtml(comment.text)}</div>
-      <div class="comment-date">${date}</div>
-      <div class="comment-attachments" id="att-${comment.id}"></div>
     `;
 
+    // Seek on timestamp
     card.querySelector('.timestamp-pill').addEventListener('click', () => {
       if (player) player.seekTo(comment.timestamp);
     });
+
+    // Resolve toggle
+    if (allowComments) {
+      card.querySelector('.comment-resolve-btn').addEventListener('click', () => {
+        toggleResolve(comment.id);
+      });
+    }
+
+    // Edit/Delete (only for own guest comments)
+    if (isMyComment) {
+      card.querySelector('.comment-edit-btn').addEventListener('click', () => {
+        startEditComment(comment.id);
+      });
+      card.querySelector('.comment-delete-btn').addEventListener('click', () => {
+        deleteComment(comment.id);
+      });
+      card.querySelector(`#comment-edit-cancel-${comment.id}`).addEventListener('click', () => {
+        cancelEditComment(comment.id);
+      });
+      card.querySelector(`#comment-edit-save-${comment.id}`).addEventListener('click', () => {
+        saveEditComment(comment.id);
+      });
+      card.querySelector(`#comment-edit-input-${comment.id}`).addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditComment(comment.id); }
+        if (e.key === 'Escape') cancelEditComment(comment.id);
+      });
+    }
 
     if (comment.attachments && comment.attachments.length > 0) {
       const attContainer = card.querySelector(`#att-${comment.id}`);
@@ -136,6 +285,89 @@
     }
 
     return card;
+  }
+
+  // ── Edit Comment ──────────────────────────────────────────────────────────
+  function startEditComment(id) {
+    const textEl = document.getElementById(`comment-text-${id}`);
+    const formEl = document.getElementById(`comment-edit-form-${id}`);
+    if (!textEl || !formEl) return;
+    textEl.style.display = 'none';
+    formEl.style.display = 'block';
+    const input = document.getElementById(`comment-edit-input-${id}`);
+    if (input) { input.focus(); input.select(); }
+  }
+
+  function cancelEditComment(id) {
+    const textEl = document.getElementById(`comment-text-${id}`);
+    const formEl = document.getElementById(`comment-edit-form-${id}`);
+    if (textEl) textEl.style.display = '';
+    if (formEl) formEl.style.display = 'none';
+    const c = comments.find(c => c.id === id);
+    const input = document.getElementById(`comment-edit-input-${id}`);
+    if (c && input) input.value = c.text;
+  }
+
+  async function saveEditComment(id) {
+    const input = document.getElementById(`comment-edit-input-${id}`);
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) { showToast('Comment cannot be empty', 'error'); return; }
+
+    try {
+      const res = await fetch(`/api/share/${token}/comments/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, guest_id: GUEST_ID })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        showToast(err.error || 'Failed to edit comment', 'error');
+        return;
+      }
+      const updated = await res.json();
+      const idx = comments.findIndex(c => c.id === id);
+      if (idx !== -1) comments[idx] = { ...comments[idx], text: updated.text };
+      renderComments();
+      showToast('Comment updated', 'success');
+    } catch (e) {
+      showToast('Network error', 'error');
+    }
+  }
+
+  // ── Resolve ───────────────────────────────────────────────────────────────
+  async function toggleResolve(id) {
+    try {
+      const res = await fetch(`/api/share/${token}/comments/${id}/resolve`, { method: 'PATCH' });
+      if (!res.ok) { showToast('Failed to update', 'error'); return; }
+      const updated = await res.json();
+      const idx = comments.findIndex(c => c.id === id);
+      if (idx !== -1) comments[idx] = { ...comments[idx], resolved: updated.resolved };
+      renderComments();
+      if (player) player.renderMarkers();
+    } catch (e) {
+      showToast('Network error', 'error');
+    }
+  }
+
+  // ── Delete Comment ────────────────────────────────────────────────────────
+  async function deleteComment(id) {
+    try {
+      const res = await fetch(`/api/share/${token}/comments/${id}?guest_id=${encodeURIComponent(GUEST_ID)}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        showToast(err.error || 'Failed to delete comment', 'error');
+        return;
+      }
+      comments = comments.filter(c => c.id !== id);
+      renderComments();
+      if (player) player.renderMarkers();
+      showToast('Comment deleted', 'success');
+    } catch (e) {
+      showToast('Network error', 'error');
+    }
   }
 
   function buildAttachmentEl(att, srcUrl) {
@@ -183,8 +415,11 @@
     });
 
     submitComment.addEventListener('click', submitNewComment);
+
+    // Enter to submit (not Shift+Enter)
     commentText.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
         submitNewComment();
       }
     });
@@ -205,7 +440,7 @@
       const res = await fetch(`/api/share/${token}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: capturedTimestamp, text })
+        body: JSON.stringify({ timestamp: capturedTimestamp, text, guest_id: GUEST_ID })
       });
 
       if (!res.ok) {
