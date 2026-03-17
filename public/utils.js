@@ -241,6 +241,17 @@ function toggleTheme() {
 }
 
 /**
+ * Get a deterministic color for a user based on their name
+ */
+function getUserColor(name) {
+  const palette = ['#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ef4444', '#f97316', '#06b6d4', '#ec4899'];
+  if (!name) return palette[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return palette[Math.abs(hash) % palette.length];
+}
+
+/**
  * Get a gradient for a project/item based on its name
  */
 function getProjectGradient(name) {

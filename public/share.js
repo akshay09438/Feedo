@@ -21,6 +21,48 @@
   }
   const GUEST_ID = getGuestId();
 
+  // ── Display name prompt ───────────────────────────────────────────────────
+  function ensureDisplayName(callback) {
+    const existing = localStorage.getItem('feedo_display_name');
+    if (existing && existing.trim()) {
+      callback();
+      return;
+    }
+
+    // Show name prompt above the comment form
+    const addArea = document.getElementById('add-comment-area');
+    addArea.style.display = 'none';
+
+    const namePrompt = document.createElement('div');
+    namePrompt.id = 'name-prompt-area';
+    namePrompt.className = 'name-prompt-area';
+    namePrompt.innerHTML = `
+      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:10px;">Enter your name to comment</p>
+      <div style="display:flex; gap:8px;">
+        <input type="text" id="share-name-input" class="form-input" placeholder="Your name…" style="flex:1;" />
+        <button class="btn btn-primary" id="share-name-confirm" style="white-space:nowrap;">Confirm</button>
+      </div>
+    `;
+
+    addArea.parentNode.insertBefore(namePrompt, addArea);
+
+    const input = namePrompt.querySelector('#share-name-input');
+    const confirmBtn = namePrompt.querySelector('#share-name-confirm');
+
+    function confirmName() {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      localStorage.setItem('feedo_display_name', name);
+      namePrompt.remove();
+      addArea.style.display = 'block';
+      callback();
+    }
+
+    confirmBtn.addEventListener('click', confirmName);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') confirmName(); });
+    setTimeout(() => input.focus(), 50);
+  }
+
   // ── DOM refs ──────────────────────────────────────────────────────────────
   const videoEl           = document.getElementById('video-el');
   const projectBreadcrumb = document.getElementById('project-breadcrumb');
@@ -98,7 +140,7 @@
         addCommentArea.style.display = 'block';
         viewOnlyNote.style.display = 'none';
         filterRow.style.display = 'flex';
-        setupCommentForm();
+        ensureDisplayName(setupCommentForm);
         setupCommentFilters();
       } else {
         addCommentArea.style.display = 'none';
@@ -193,7 +235,9 @@
 
     // Determine if this guest can edit/delete this comment
     const isMyComment = allowComments && comment.author === `guest:${GUEST_ID}`;
-    const isAdminComment = comment.author === 'admin';
+    const authorRaw = comment.author || 'guest';
+    const displayAuthor = authorRaw.startsWith('guest:') ? authorRaw.slice(6) : authorRaw;
+    const pillColor = getUserColor(authorRaw);
 
     card.innerHTML = `
       <div class="comment-main-row">
@@ -205,14 +249,14 @@
         </button>` : '<div style="width:22px;flex-shrink:0;"></div>'}
         <div class="comment-body">
           <div class="comment-header">
-            <span class="timestamp-pill" data-ts="${comment.timestamp}">
+            <span class="timestamp-pill" data-ts="${comment.timestamp}" style="background:${pillColor}22; border-color:${pillColor}44; color:${pillColor};">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="12" cy="12" r="10"/>
                 <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
               </svg>
               ${formatTime(comment.timestamp)}
             </span>
-            <span class="comment-author-label">${isAdminComment ? 'Admin' : (isMyComment ? 'You' : 'Guest')}</span>
+            <span class="comment-author-label">${isMyComment ? 'You' : escapeHtml(displayAuthor)}</span>
             ${isMyComment ? `
             <div class="comment-actions">
               <button class="comment-edit-btn" data-id="${comment.id}" title="Edit comment">
@@ -436,11 +480,13 @@
     submitComment.disabled = true;
     submitComment.textContent = 'Posting…';
 
+    const displayName = localStorage.getItem('feedo_display_name') || '';
+
     try {
       const res = await fetch(`/api/share/${token}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: capturedTimestamp, text, guest_id: GUEST_ID })
+        body: JSON.stringify({ timestamp: capturedTimestamp, text, guest_id: GUEST_ID, display_name: displayName })
       });
 
       if (!res.ok) {

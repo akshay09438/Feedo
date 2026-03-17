@@ -263,6 +263,20 @@ app.get('/api/auth/status', (req, res) => {
   res.json({ authenticated: !!(req.session && req.session.authenticated) });
 });
 
+app.post('/api/auth/name', requireAuth, (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  req.session.displayName = name.trim();
+  res.json({ ok: true, name: req.session.displayName });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({
+    name: req.session.displayName || null,
+    email: null
+  });
+});
+
 // ── Project routes ────────────────────────────────────────────────────────────
 app.get('/api/projects', requireAuth, (req, res) => {
   try {
@@ -555,26 +569,44 @@ app.get('/api/videos/:id/comments', requireAuth, (req, res) => {
 });
 
 app.post('/api/videos/:id/comments', requireAuth, (req, res) => {
+  uploadAttachments.single('attachment')(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message });
+    _handleVideoComment(req, res);
+  });
+});
+
+function _handleVideoComment(req, res) {
   const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
-  const { timestamp, text } = req.body;
+  const { timestamp, text, display_name } = req.body;
   if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
-    const author = 'admin';
+    const author = (display_name && display_name.trim()) ? display_name.trim() : 'admin';
     const id = insertDb(
       'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
       [req.params.id, parseFloat(timestamp), text.trim(), author]
     );
     const comment = getDb('SELECT * FROM comments WHERE id = ?', [id]);
     logHistory(req.params.id, null, author, 'comment_added', `Comment at ${parseFloat(timestamp).toFixed(1)}s`);
+
+    // Handle single attachment (for annotation tool)
+    if (req.file) {
+      insertDb(
+        'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
+        [id, req.file.filename, req.file.originalname, req.file.mimetype || 'image/png']
+      );
+      const attachments = allDb('SELECT * FROM attachments WHERE comment_id = ? ORDER BY created_at ASC', [id]);
+      return res.status(201).json({ ...comment, attachments });
+    }
+
     res.status(201).json({ ...comment, attachments: [] });
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
-});
+}
 
 // ── Video versions ────────────────────────────────────────────────────────────
 app.get('/api/videos/:id/versions', requireAuth, (req, res) => {
@@ -802,12 +834,12 @@ app.post('/api/share/:token/comments', (req, res) => {
   if (!video) return res.status(404).json({ error: 'Share link not found' });
   if (!video.allow_comments) return res.status(403).json({ error: 'Comments are disabled for this video' });
 
-  const { timestamp, text, guest_id } = req.body;
+  const { timestamp, text, guest_id, display_name } = req.body;
   if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
-    const author = guest_id ? `guest:${guest_id}` : 'guest';
+    const author = (display_name && display_name.trim()) ? display_name.trim() : (guest_id ? `guest:${guest_id}` : 'guest');
     const id = insertDb(
       'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
       [video.id, parseFloat(timestamp), text.trim(), author]
