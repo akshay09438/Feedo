@@ -270,11 +270,44 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         expandBtn.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
       });
 
-      // Navigate to project on name click
+      // Navigate to project on single click; double-click to rename
       const nameEl = item.querySelector('.sidebar-project-name-text');
       nameEl.addEventListener('click', e => {
         e.stopPropagation();
         window.location.href = `/project/${project.id}`;
+      });
+      nameEl.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        e.preventDefault();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = project.name;
+        input.className = 'sidebar-rename-input';
+        nameEl.replaceWith(input);
+        input.focus();
+        input.select();
+        async function saveRename() {
+          const newName = input.value.trim();
+          if (newName && newName !== project.name) {
+            const r = await fetch(`/api/projects/${project.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName })
+            });
+            if (r.ok) {
+              project.name = newName;
+              showToast('Project renamed', 'success');
+            } else {
+              showToast('Failed to rename', 'error');
+            }
+          }
+          renderProjects(searchInput.value);
+        }
+        input.addEventListener('blur', saveRename);
+        input.addEventListener('keydown', e2 => {
+          if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
+          if (e2.key === 'Escape') { input.removeEventListener('blur', saveRename); renderProjects(searchInput.value); }
+        });
       });
 
       // Delete project
@@ -333,13 +366,52 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         });
       });
 
-      // Video item navigation
+      // Video item navigation + rename
       item.querySelectorAll('.sidebar-video-item').forEach(vi => {
         vi.addEventListener('click', e => {
           if (e.target.closest('.sidebar-delete-btn')) return;
           e.stopPropagation();
           window.location.href = `/video/${vi.dataset.videoId}`;
         });
+        const vNameEl = vi.querySelector('.sidebar-video-item-name');
+        if (vNameEl) {
+          vNameEl.addEventListener('dblclick', e => {
+            e.stopPropagation();
+            e.preventDefault();
+            const vid = vi.dataset.videoId;
+            const videoObj = allVideos.find(vv => String(vv.id) === String(vid));
+            if (!videoObj) return;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = videoObj.name;
+            input.className = 'sidebar-rename-input';
+            vNameEl.replaceWith(input);
+            input.focus();
+            input.select();
+            async function saveVideoRename() {
+              const newName = input.value.trim();
+              if (newName && newName !== videoObj.name) {
+                const r = await fetch(`/api/videos/${vid}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: newName })
+                });
+                if (r.ok) {
+                  videoObj.name = newName;
+                  showToast('Video renamed', 'success');
+                } else {
+                  showToast('Failed to rename', 'error');
+                }
+              }
+              renderProjects(searchInput.value);
+            }
+            input.addEventListener('blur', saveVideoRename);
+            input.addEventListener('keydown', e2 => {
+              if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
+              if (e2.key === 'Escape') { input.removeEventListener('blur', saveVideoRename); renderProjects(searchInput.value); }
+            });
+          });
+        }
       });
 
       projectsList.appendChild(item);
@@ -386,6 +458,43 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
       item.addEventListener('click', e => {
         if (e.target.closest('.sidebar-delete-btn')) return;
         window.location.href = `/video/${v.id}`;
+      });
+
+      const listNameEl = item.querySelector('.sidebar-video-list-name');
+      listNameEl.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        e.preventDefault();
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = v.name;
+        input.className = 'sidebar-rename-input';
+        listNameEl.replaceWith(input);
+        input.focus();
+        input.select();
+        async function saveListVideoRename() {
+          const newName = input.value.trim();
+          if (newName && newName !== v.name) {
+            const r = await fetch(`/api/videos/${v.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName })
+            });
+            if (r.ok) {
+              v.name = newName;
+              const videoObj = allVideos.find(vv => String(vv.id) === String(v.id));
+              if (videoObj) videoObj.name = newName;
+              showToast('Video renamed', 'success');
+            } else {
+              showToast('Failed to rename', 'error');
+            }
+          }
+          renderVideos(searchInput.value);
+        }
+        input.addEventListener('blur', saveListVideoRename);
+        input.addEventListener('keydown', e2 => {
+          if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
+          if (e2.key === 'Escape') { input.removeEventListener('blur', saveListVideoRename); renderVideos(searchInput.value); }
+        });
       });
 
       item.querySelector('.sidebar-delete-btn').addEventListener('click', e => {

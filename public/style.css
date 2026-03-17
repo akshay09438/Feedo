@@ -271,6 +271,18 @@ img { display: block; max-width: 100%; }
 
 .sidebar-create-input-row .cancel-btn:hover { background: var(--bg-active); }
 
+.sidebar-rename-input {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  width: 100%;
+  min-width: 0;
+}
+
 .sidebar-projects {
   display: flex;
   flex-direction: column;
