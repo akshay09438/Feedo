@@ -426,9 +426,12 @@
     // Auto-focus on pause (from player callback) — also focus on explicit focus events
     commentText.addEventListener('focus', () => {
       player.pause();
-      capturedTimestamp = videoEl.currentTime;
-      commentAtTime.textContent = formatTime(capturedTimestamp);
-      commentAtBadge.style.display = 'inline-flex';
+      // Don't overwrite timestamp if an annotation is pending (it has its own timestamp)
+      if (!pendingAnnotation) {
+        capturedTimestamp = videoEl.currentTime;
+        commentAtTime.textContent = formatTime(capturedTimestamp);
+        commentAtBadge.style.display = 'inline-flex';
+      }
     });
 
     attachBtn.addEventListener('click', () => attachmentInput.click());
@@ -1009,35 +1012,47 @@
       drawCanvas.height = r.height;
     }
     videoEl.addEventListener('loadedmetadata', sizeCanvases);
+    videoEl.addEventListener('loadeddata', sizeCanvases);
+    videoEl.addEventListener('canplay', sizeCanvases);
     window.addEventListener('resize', sizeCanvases);
-    setTimeout(sizeCanvases, 300); // after video element settles
+    setTimeout(sizeCanvases, 100);
+    setTimeout(sizeCanvases, 500);
 
     // ── Render annotations for current time ───────────────────────────────
+    function drawAnnotOnCtx(ctx, type, data, color, w, h) {
+      if (type === 'draw') {
+        (data.strokes || []).forEach(strk => {
+          if (!strk.points || strk.points.length < 2) return;
+          ctx.beginPath();
+          ctx.strokeStyle = color || DRAW_COLOR;
+          ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+          strk.points.forEach((pt, i) => {
+            const px = pt.x * w, py = pt.y * h;
+            i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          });
+          ctx.stroke();
+        });
+      } else if (type === 'text') {
+        const px = data.x * w, py = data.y * h;
+        ctx.font = 'bold 18px system-ui, sans-serif';
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 3;
+        ctx.strokeText(data.text || '', px, py);
+        ctx.fillStyle = color || '#ffffff';
+        ctx.fillText(data.text || '', px, py);
+      }
+    }
+
     function renderAnnotationsAtTime(t) {
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
       const w = annotCanvas.width, h = annotCanvas.height;
-      annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW).forEach(a => {
-        if (a.type === 'draw') {
-          (a.data.strokes || []).forEach(strk => {
-            if (!strk.points || strk.points.length < 2) return;
-            annotCtx.beginPath();
-            annotCtx.strokeStyle = a.color || DRAW_COLOR;
-            annotCtx.lineWidth = 3; annotCtx.lineCap = 'round'; annotCtx.lineJoin = 'round';
-            strk.points.forEach((pt, i) => {
-              const px = pt.x * w, py = pt.y * h;
-              i === 0 ? annotCtx.moveTo(px, py) : annotCtx.lineTo(px, py);
-            });
-            annotCtx.stroke();
-          });
-        } else if (a.type === 'text') {
-          const px = a.data.x * w, py = a.data.y * h;
-          annotCtx.font = 'bold 18px system-ui, sans-serif';
-          annotCtx.strokeStyle = 'rgba(0,0,0,0.85)'; annotCtx.lineWidth = 3;
-          annotCtx.strokeText(a.data.text || '', px, py);
-          annotCtx.fillStyle = a.color || '#ffffff';
-          annotCtx.fillText(a.data.text || '', px, py);
-        }
-      });
+      // Saved annotations within time window
+      annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW)
+        .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color, w, h));
+      // Show pending annotation as live preview (before comment is submitted)
+      if (pendingAnnotation && Math.abs(capturedTimestamp - t) <= WINDOW) {
+        drawAnnotOnCtx(annotCtx, pendingAnnotation.type, pendingAnnotation.data,
+          pendingAnnotation.type === 'draw' ? DRAW_COLOR : '#ffffff', w, h);
+      }
     }
 
     // rAF loop — frame-accurate, no timeupdate lag
@@ -1077,6 +1092,12 @@
       drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
       textBtn.classList.remove('active');
       drawBtn.classList.remove('active');
+      // Clear comment box if it only has the auto-filled label
+      const val = commentText.value.trim();
+      if (val === '[Drawing]' || val.startsWith('[Text] ')) {
+        commentText.value = '';
+        commentAtBadge.style.display = 'none';
+      }
     }
 
     // Escape key cancels annotation mode
