@@ -222,11 +222,16 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId)
       item.className = 'sidebar-project-item' + (isActive ? ' active' : '');
       item.dataset.projectId = project.id;
 
-      // Get primary videos (V1 only) for this project from allVideos
-      const projectVideos = allVideos.filter(v =>
-        v.project_id && String(v.project_id) === String(project.id) &&
-        (!v.version_number || v.version_number === 1)
-      );
+      // Get one video per version group for this project
+      const projGroupMap = {};
+      allVideos.filter(v => v.project_id && String(v.project_id) === String(project.id))
+        .forEach(v => {
+          const gid = v.version_group_id || ('solo_' + v.id);
+          if (!projGroupMap[gid] || (v.version_number || 1) < (projGroupMap[gid].version_number || 1)) {
+            projGroupMap[gid] = v;
+          }
+        });
+      const projectVideos = Object.values(projGroupMap);
 
       item.innerHTML = `
         <div class="sidebar-project-row">
@@ -343,8 +348,15 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId)
     const q = (filterText || '').toLowerCase().trim();
     videosList.innerHTML = '';
 
-    // Only show primary versions (V1) in sidebar — other versions accessed via version tabs
-    const primaryVideos = allVideos.filter(v => !v.version_number || v.version_number === 1);
+    // Show one entry per version group (the lowest version number), so all videos appear
+    const groupMap = {};
+    allVideos.forEach(v => {
+      const gid = v.version_group_id || ('solo_' + v.id);
+      if (!groupMap[gid] || (v.version_number || 1) < (groupMap[gid].version_number || 1)) {
+        groupMap[gid] = v;
+      }
+    });
+    const primaryVideos = Object.values(groupMap);
     const filtered = q
       ? primaryVideos.filter(v => v.name.toLowerCase().includes(q))
       : primaryVideos;
