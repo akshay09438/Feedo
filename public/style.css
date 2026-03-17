@@ -1216,6 +1216,50 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 [data-theme="light"] .video-wrapper { background: #e8e8e8; }
 
 
+/* ── Annotation Toolbar ──────────────────────────────────────────────────── */
+.annotation-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.annot-tool-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.65);
+  border: 1px solid rgba(255,255,255,0.25);
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s, border-color 0.15s;
+}
+.annot-tool-btn:hover, .annot-tool-btn.active {
+  background: #6366f1;
+  border-color: #6366f1;
+}
+.annot-text-input-overlay {
+  position: absolute;
+  background: rgba(0,0,0,0.8);
+  border: 2px solid #6366f1;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  outline: none;
+  min-width: 160px;
+  z-index: 25;
+}
+
 /* ── Name Prompt Area (share page) ───────────────────────────────────────── */
 .name-prompt-area {
   padding: 14px 16px;

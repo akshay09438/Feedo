@@ -42,6 +42,21 @@
       <div class="video-side">
         <div class="video-wrapper">
           <video id="video-el" preload="metadata" crossorigin="anonymous"></video>
+          <canvas id="annot-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
+          <canvas id="draw-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;touch-action:none;"></canvas>
+          <div id="text-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;"></div>
+          <div class="annotation-toolbar" id="annotation-toolbar">
+            <button class="annot-tool-btn" id="annot-text-btn" title="Add text">T</button>
+            <button class="annot-tool-btn" id="annot-draw-btn" title="Draw">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+            </button>
+          </div>
+          <div id="annot-action-bar" style="display:none;position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:30;display:none;gap:8px;align-items:center;">
+            <button id="annot-post-btn" style="background:#6366f1;color:#fff;border:none;border-radius:6px;padding:7px 20px;font-size:13px;font-weight:600;cursor:pointer;">Post</button>
+            <button id="annot-cancel-btn" style="background:rgba(0,0,0,0.7);color:#fff;border:1px solid rgba(255,255,255,0.3);border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;">Cancel</button>
+          </div>
 
         </div>
 

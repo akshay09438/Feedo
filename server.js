@@ -141,6 +141,20 @@ async function initDatabase() {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS annotations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+      timestamp REAL NOT NULL,
+      type TEXT NOT NULL DEFAULT 'draw',
+      data TEXT NOT NULL,
+      author TEXT,
+      color TEXT NOT NULL DEFAULT '#ef4444',
+      comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       video_id INTEGER REFERENCES videos(id) ON DELETE CASCADE,
@@ -609,6 +623,62 @@ function _handleVideoComment(req, res) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
 }
+
+// ── Annotations ───────────────────────────────────────────────────────────────
+app.get('/api/videos/:id/annotations', requireAuth, (req, res) => {
+  const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  try {
+    const rows = allDb('SELECT * FROM annotations WHERE video_id = ? ORDER BY timestamp ASC', [req.params.id]);
+    res.json(rows.map(r => ({ ...r, data: JSON.parse(r.data) })));
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/videos/:id/annotations', requireAuth, (req, res) => {
+  const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  const { timestamp, type, data, author, color } = req.body;
+  if (timestamp === undefined || !data) return res.status(400).json({ error: 'timestamp and data required' });
+
+  try {
+    const safeAuthor = (author && author.trim()) ? author.trim() : 'admin';
+    const safeColor = color || '#ef4444';
+    const safeType = type || 'draw';
+
+    // Create linked comment
+    const label = safeType === 'text' ? `[Text] ${data.text || ''}` : '[Drawing]';
+    const commentId = insertDb(
+      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
+      [req.params.id, parseFloat(timestamp), label, safeAuthor]
+    );
+
+    const annotId = insertDb(
+      'INSERT INTO annotations (video_id, timestamp, type, data, author, color, comment_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [req.params.id, parseFloat(timestamp), safeType, JSON.stringify(data), safeAuthor, safeColor, commentId]
+    );
+
+    const annot = getDb('SELECT * FROM annotations WHERE id = ?', [annotId]);
+    const comment = getDb('SELECT * FROM comments WHERE id = ?', [commentId]);
+
+    res.status(201).json({ annotation: { ...annot, data: JSON.parse(annot.data) }, comment: { ...comment, attachments: [] } });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/annotations/:id', requireAuth, (req, res) => {
+  const annot = getDb('SELECT * FROM annotations WHERE id = ?', [req.params.id]);
+  if (!annot) return res.status(404).json({ error: 'Annotation not found' });
+  try {
+    runDb('DELETE FROM annotations WHERE id = ?', [req.params.id]);
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── Video versions ────────────────────────────────────────────────────────────
 app.get('/api/videos/:id/versions', requireAuth, (req, res) => {

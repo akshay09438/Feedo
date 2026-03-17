@@ -35,6 +35,7 @@
   let video            = null;
   let comments         = [];
   let versions         = [];
+  let annotations      = [];
   let capturedTimestamp = 0;
   let selectedFiles    = [];
   let player           = null;
@@ -107,8 +108,8 @@
     // Init sidebar — pass version_group_id so all versions of this file stay highlighted
     initSidebar(video.project_id, videoId, video.version_group_id);
 
-    // Load comments, versions
-    await Promise.all([loadComments(), loadVersions()]);
+    // Load comments, versions, annotations
+    await Promise.all([loadComments(), loadVersions(), loadAnnotations()]);
 
     // Setup everything
     setupCommentForm();
@@ -118,6 +119,7 @@
     setupHistoryPanel();
     setupVersionBar();
     setupResizeHandle();
+    setupAnnotations();
     startCommentPolling();
   }
 
@@ -132,6 +134,14 @@
     } catch (e) {
       commentsList.innerHTML = `<div style="text-align:center; padding:40px; color:var(--danger); font-size:13px;">Failed to load comments.</div>`;
     }
+  }
+
+  // ── Load Annotations ──────────────────────────────────────────────────────
+  async function loadAnnotations() {
+    try {
+      const res = await fetch(`/api/videos/${videoId}/annotations`);
+      if (res.ok) annotations = await res.json();
+    } catch(e) { /* non-critical */ }
   }
 
   // ── Load Versions ─────────────────────────────────────────────────────────
@@ -921,6 +931,263 @@
       isResizing = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+    });
+  }
+
+  // ── Annotations ───────────────────────────────────────────────────────────
+  function setupAnnotations() {
+    const annotCanvas   = document.getElementById('annot-canvas');
+    const drawCanvas    = document.getElementById('draw-canvas');
+    const textOverlay   = document.getElementById('text-overlay');
+    const actionBar     = document.getElementById('annot-action-bar');
+    const postBtn       = document.getElementById('annot-post-btn');
+    const cancelBtn     = document.getElementById('annot-cancel-btn');
+    const textBtn       = document.getElementById('annot-text-btn');
+    const drawBtn       = document.getElementById('annot-draw-btn');
+
+    if (!annotCanvas) return;
+
+    const annotCtx = annotCanvas.getContext('2d');
+    let mode = null; // 'draw' | 'text' | null
+    let strokes = []; // [{points:[{x,y}], color}]
+    let currentStroke = [];
+    let drawing = false;
+    let pendingText = null; // {x, y, input el}
+    const DRAW_COLOR = '#ef4444';
+    const WINDOW = 0.6; // seconds ± to show annotation
+
+    // Size canvases to match video element
+    function sizeCanvases() {
+      const w = videoEl.clientWidth || videoEl.offsetWidth || 640;
+      const h = videoEl.clientHeight || videoEl.offsetHeight || 360;
+      annotCanvas.width = w;
+      annotCanvas.height = h;
+      drawCanvas.width = w;
+      drawCanvas.height = h;
+    }
+    videoEl.addEventListener('loadedmetadata', sizeCanvases);
+    window.addEventListener('resize', sizeCanvases);
+    sizeCanvases();
+
+    // ── Playback: render annotations for current time ──────────────────────
+    function renderAnnotationsAtTime(t) {
+      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
+      const visible = annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW);
+      visible.forEach(a => drawAnnotation(annotCtx, a, annotCanvas.width, annotCanvas.height));
+    }
+
+    function drawAnnotation(ctx, annot, w, h) {
+      if (annot.type === 'draw') {
+        const strks = annot.data.strokes || [];
+        strks.forEach(strk => {
+          if (!strk.points || strk.points.length < 2) return;
+          ctx.beginPath();
+          ctx.strokeStyle = annot.color || DRAW_COLOR;
+          ctx.lineWidth = 3;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          strk.points.forEach((pt, i) => {
+            const px = pt.x * w;
+            const py = pt.y * h;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          });
+          ctx.stroke();
+        });
+      } else if (annot.type === 'text') {
+        const d = annot.data;
+        const px = d.x * w;
+        const py = d.y * h;
+        ctx.font = `bold 18px system-ui, sans-serif`;
+        ctx.fillStyle = annot.color || '#ffffff';
+        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        ctx.lineWidth = 3;
+        ctx.strokeText(d.text || '', px, py);
+        ctx.fillText(d.text || '', px, py);
+      }
+    }
+
+    videoEl.addEventListener('timeupdate', () => {
+      if (mode) return; // don't overwrite during editing
+      renderAnnotationsAtTime(videoEl.currentTime);
+    });
+    videoEl.addEventListener('seeked', () => {
+      if (mode) return;
+      renderAnnotationsAtTime(videoEl.currentTime);
+    });
+
+    // ── Cancel / cleanup ───────────────────────────────────────────────────
+    function cancelAnnotation() {
+      mode = null;
+      strokes = [];
+      currentStroke = [];
+      drawing = false;
+      drawCanvas.style.display = 'none';
+      textOverlay.style.display = 'none';
+      textOverlay.innerHTML = '';
+      actionBar.style.display = 'none';
+      textBtn.classList.remove('active');
+      drawBtn.classList.remove('active');
+      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
+      renderAnnotationsAtTime(videoEl.currentTime);
+    }
+
+    cancelBtn.addEventListener('click', cancelAnnotation);
+
+    // ── Post annotation ────────────────────────────────────────────────────
+    async function postAnnotation() {
+      const ts = videoEl.currentTime;
+      const displayName = localStorage.getItem('feedo_display_name') || 'Admin';
+
+      let data;
+      if (mode === 'draw') {
+        if (strokes.length === 0) { showToast('Draw something first', 'error'); return; }
+        // Normalise stroke coords to 0-1
+        const normStrokes = strokes.map(strk => ({
+          points: strk.points.map(pt => ({
+            x: pt.x / drawCanvas.width,
+            y: pt.y / drawCanvas.height
+          }))
+        }));
+        data = { strokes: normStrokes };
+      } else if (mode === 'text') {
+        const inp = textOverlay.querySelector('.annot-text-input-overlay');
+        const txt = inp ? inp.value.trim() : '';
+        if (!txt) { showToast('Enter some text first', 'error'); return; }
+        const left = parseFloat(inp.style.left) / drawCanvas.width;
+        const top  = parseFloat(inp.style.top)  / drawCanvas.height;
+        data = { text: txt, x: left, y: top };
+      } else return;
+
+      postBtn.disabled = true;
+      postBtn.textContent = '…';
+
+      try {
+        const res = await fetch(`/api/videos/${videoId}/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timestamp: ts, type: mode, data, author: displayName, color: mode === 'draw' ? DRAW_COLOR : '#ffffff' })
+        });
+        if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
+        const { annotation, comment } = await res.json();
+        annotations.push(annotation);
+        comments.push(comment);
+        comments.sort((a, b) => a.timestamp - b.timestamp);
+        renderComments();
+        if (player) player.renderMarkers();
+        showToast('Annotation posted', 'success');
+        cancelAnnotation();
+      } catch(e) {
+        showToast('Network error', 'error');
+      } finally {
+        postBtn.disabled = false;
+        postBtn.textContent = 'Post';
+      }
+    }
+
+    postBtn.addEventListener('click', postAnnotation);
+
+    // ── Draw mode ──────────────────────────────────────────────────────────
+    function startDrawMode() {
+      if (videoEl.paused === false) videoEl.pause();
+      sizeCanvases();
+      mode = 'draw';
+      strokes = [];
+      drawBtn.classList.add('active');
+      textBtn.classList.remove('active');
+      drawCanvas.style.display = 'block';
+      textOverlay.style.display = 'none';
+      textOverlay.innerHTML = '';
+      actionBar.style.display = 'flex';
+
+      const drawCtx = drawCanvas.getContext('2d');
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+
+      drawCanvas.onmousedown = e => {
+        drawing = true;
+        currentStroke = [];
+        const r = drawCanvas.getBoundingClientRect();
+        const scaleX = drawCanvas.width / r.width;
+        const scaleY = drawCanvas.height / r.height;
+        currentStroke.push({ x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY });
+        drawCtx.beginPath();
+        drawCtx.strokeStyle = DRAW_COLOR;
+        drawCtx.lineWidth = 3;
+        drawCtx.lineCap = 'round';
+        drawCtx.lineJoin = 'round';
+        drawCtx.moveTo(currentStroke[0].x, currentStroke[0].y);
+      };
+      drawCanvas.onmousemove = e => {
+        if (!drawing) return;
+        const r = drawCanvas.getBoundingClientRect();
+        const scaleX = drawCanvas.width / r.width;
+        const scaleY = drawCanvas.height / r.height;
+        const pt = { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY };
+        currentStroke.push(pt);
+        drawCtx.lineTo(pt.x, pt.y);
+        drawCtx.stroke();
+      };
+      drawCanvas.onmouseup = () => {
+        if (!drawing) return;
+        drawing = false;
+        if (currentStroke.length > 1) strokes.push({ points: currentStroke });
+        currentStroke = [];
+      };
+      drawCanvas.onmouseleave = () => {
+        if (drawing && currentStroke.length > 1) strokes.push({ points: currentStroke });
+        drawing = false;
+        currentStroke = [];
+      };
+    }
+
+    drawBtn.addEventListener('click', () => {
+      if (mode === 'draw') { cancelAnnotation(); return; }
+      startDrawMode();
+    });
+
+    // ── Text mode ──────────────────────────────────────────────────────────
+    function startTextMode() {
+      if (videoEl.paused === false) videoEl.pause();
+      sizeCanvases();
+      mode = 'text';
+      textBtn.classList.add('active');
+      drawBtn.classList.remove('active');
+      drawCanvas.style.display = 'none';
+      drawCanvas.onmousedown = null;
+      drawCanvas.onmousemove = null;
+      drawCanvas.onmouseup = null;
+      textOverlay.style.display = 'block';
+      textOverlay.innerHTML = '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;pointer-events:none;white-space:nowrap;">Click where you want to place text</div>';
+      actionBar.style.display = 'flex';
+
+      textOverlay.onclick = e => {
+        if (e.target !== textOverlay && !e.target.closest('div[style*="pointer-events:none"]')) return;
+        // Remove instruction label
+        textOverlay.querySelector('div[style*="pointer-events:none"]')?.remove();
+        textOverlay.onclick = null;
+
+        const rect = textOverlay.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'annot-text-input-overlay';
+        inp.placeholder = 'Type here…';
+        inp.style.left = x + 'px';
+        inp.style.top  = y + 'px';
+        textOverlay.appendChild(inp);
+        inp.focus();
+        inp.addEventListener('keydown', e2 => {
+          if (e2.key === 'Enter') { e2.preventDefault(); postAnnotation(); }
+          if (e2.key === 'Escape') cancelAnnotation();
+        });
+      };
+    }
+
+    textBtn.addEventListener('click', () => {
+      if (mode === 'text') { cancelAnnotation(); return; }
+      startTextMode();
     });
   }
 
