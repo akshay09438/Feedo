@@ -954,7 +954,7 @@
     let drawing = false;
     let pendingText = null; // {x, y, input el}
     const DRAW_COLOR = '#ef4444';
-    const WINDOW = 0.6; // seconds ± to show annotation
+    const WINDOW = 1 / 30; // exactly one frame at 30fps (~0.033s)
 
     // Size canvases to match video element
     function sizeCanvases() {
@@ -1007,14 +1007,11 @@
       }
     }
 
-    videoEl.addEventListener('timeupdate', () => {
-      if (mode) return; // don't overwrite during editing
-      renderAnnotationsAtTime(videoEl.currentTime);
-    });
-    videoEl.addEventListener('seeked', () => {
-      if (mode) return;
-      renderAnnotationsAtTime(videoEl.currentTime);
-    });
+    // Use rAF loop for frame-accurate rendering (no timeupdate lag)
+    (function rafLoop() {
+      if (!mode) renderAnnotationsAtTime(videoEl.currentTime);
+      requestAnimationFrame(rafLoop);
+    })();
 
     // ── Cancel / cleanup ───────────────────────────────────────────────────
     function cancelAnnotation() {
@@ -1176,8 +1173,26 @@
         inp.placeholder = 'Type here…';
         inp.style.left = x + 'px';
         inp.style.top  = y + 'px';
+        inp.style.cursor = 'move';
         textOverlay.appendChild(inp);
         inp.focus();
+
+        // Make it draggable
+        let dragging = false, dragOffX = 0, dragOffY = 0;
+        inp.addEventListener('mousedown', e2 => {
+          dragging = true;
+          dragOffX = e2.clientX - inp.getBoundingClientRect().left;
+          dragOffY = e2.clientY - inp.getBoundingClientRect().top;
+          e2.preventDefault();
+        });
+        textOverlay.addEventListener('mousemove', e2 => {
+          if (!dragging) return;
+          const r = textOverlay.getBoundingClientRect();
+          inp.style.left = (e2.clientX - r.left - dragOffX) + 'px';
+          inp.style.top  = (e2.clientY - r.top  - dragOffY) + 'px';
+        });
+        textOverlay.addEventListener('mouseup', () => { if (dragging) { dragging = false; inp.focus(); } });
+
         inp.addEventListener('keydown', e2 => {
           if (e2.key === 'Enter') { e2.preventDefault(); postAnnotation(); }
           if (e2.key === 'Escape') cancelAnnotation();
