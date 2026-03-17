@@ -242,6 +242,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
             <polyline points="9 18 15 12 9 6"/>
           </svg>
           <span class="sidebar-project-name-text">${escapeHtml(project.name)}</span>
+          <button class="sidebar-rename-icon-btn" title="Rename project">✏️</button>
           <button class="sidebar-delete-btn" data-id="${project.id}" data-name="${escapeHtml(project.name)}" title="Delete project">🗑</button>
         </div>
         <div class="sidebar-project-children" style="display:none;">
@@ -250,6 +251,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
               <div class="sidebar-video-item${activeVideoId && (String(v.id) === String(activeVideoId) || (activeVersionGroupId && v.version_group_id && v.version_group_id === activeVersionGroupId)) ? ' active' : ''}" data-video-id="${v.id}">
                 <span class="sidebar-video-item-icon">└</span>
                 <span class="sidebar-video-item-name">${escapeHtml(v.name)}</span>
+                <button class="sidebar-rename-icon-btn sidebar-rename-video-btn" title="Rename video">✏️</button>
                 <button class="sidebar-delete-btn sidebar-delete-video-btn" data-id="${v.id}" data-name="${escapeHtml(v.name)}" title="Delete video">🗑</button>
               </div>`).join('')
             : `<div style="padding:3px 8px 3px 36px; font-size:11px; color:var(--text-muted); font-style:italic;">No videos</div>`
@@ -270,23 +272,29 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         expandBtn.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
       });
 
-      // Navigate to project on single click; double-click to rename
+      // Navigate to project on name click
       const nameEl = item.querySelector('.sidebar-project-name-text');
       nameEl.addEventListener('click', e => {
         e.stopPropagation();
         window.location.href = `/project/${project.id}`;
       });
-      nameEl.addEventListener('dblclick', e => {
+
+      // Rename project via pencil button
+      const renameProjectBtn = item.querySelector('.sidebar-rename-icon-btn');
+      renameProjectBtn.addEventListener('click', e => {
         e.stopPropagation();
-        e.preventDefault();
         const input = document.createElement('input');
         input.type = 'text';
         input.value = project.name;
         input.className = 'sidebar-rename-input';
         nameEl.replaceWith(input);
+        renameProjectBtn.style.display = 'none';
         input.focus();
         input.select();
+        let saved = false;
         async function saveRename() {
+          if (saved) return;
+          saved = true;
           const newName = input.value.trim();
           if (newName && newName !== project.name) {
             const r = await fetch(`/api/projects/${project.id}`, {
@@ -306,7 +314,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         input.addEventListener('blur', saveRename);
         input.addEventListener('keydown', e2 => {
           if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
-          if (e2.key === 'Escape') { input.removeEventListener('blur', saveRename); renderProjects(searchInput.value); }
+          if (e2.key === 'Escape') { saved = true; renderProjects(searchInput.value); }
         });
       });
 
@@ -373,22 +381,26 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
           e.stopPropagation();
           window.location.href = `/video/${vi.dataset.videoId}`;
         });
-        const vNameEl = vi.querySelector('.sidebar-video-item-name');
-        if (vNameEl) {
-          vNameEl.addEventListener('dblclick', e => {
+        const vRenameBtn = vi.querySelector('.sidebar-rename-video-btn');
+        if (vRenameBtn) {
+          vRenameBtn.addEventListener('click', e => {
             e.stopPropagation();
-            e.preventDefault();
             const vid = vi.dataset.videoId;
             const videoObj = allVideos.find(vv => String(vv.id) === String(vid));
             if (!videoObj) return;
+            const vNameEl = vi.querySelector('.sidebar-video-item-name');
             const input = document.createElement('input');
             input.type = 'text';
             input.value = videoObj.name;
             input.className = 'sidebar-rename-input';
             vNameEl.replaceWith(input);
+            vRenameBtn.style.display = 'none';
             input.focus();
             input.select();
+            let saved = false;
             async function saveVideoRename() {
+              if (saved) return;
+              saved = true;
               const newName = input.value.trim();
               if (newName && newName !== videoObj.name) {
                 const r = await fetch(`/api/videos/${vid}`, {
@@ -408,7 +420,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
             input.addEventListener('blur', saveVideoRename);
             input.addEventListener('keydown', e2 => {
               if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
-              if (e2.key === 'Escape') { input.removeEventListener('blur', saveVideoRename); renderProjects(searchInput.value); }
+              if (e2.key === 'Escape') { saved = true; renderProjects(searchInput.value); }
             });
           });
         }
@@ -452,6 +464,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
       item.innerHTML = `
         <span class="sidebar-video-list-icon">🎬</span>
         <span class="sidebar-video-list-name">${escapeHtml(v.name)}</span>
+        <button class="sidebar-rename-icon-btn sidebar-rename-list-video-btn" title="Rename video">✏️</button>
         <button class="sidebar-delete-btn" data-id="${v.id}" data-name="${escapeHtml(v.name)}" title="Delete video">🗑</button>
       `;
 
@@ -460,18 +473,22 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         window.location.href = `/video/${v.id}`;
       });
 
-      const listNameEl = item.querySelector('.sidebar-video-list-name');
-      listNameEl.addEventListener('dblclick', e => {
+      const listRenameBtn = item.querySelector('.sidebar-rename-list-video-btn');
+      listRenameBtn.addEventListener('click', e => {
         e.stopPropagation();
-        e.preventDefault();
+        const listNameEl = item.querySelector('.sidebar-video-list-name');
         const input = document.createElement('input');
         input.type = 'text';
         input.value = v.name;
         input.className = 'sidebar-rename-input';
         listNameEl.replaceWith(input);
+        listRenameBtn.style.display = 'none';
         input.focus();
         input.select();
+        let saved = false;
         async function saveListVideoRename() {
+          if (saved) return;
+          saved = true;
           const newName = input.value.trim();
           if (newName && newName !== v.name) {
             const r = await fetch(`/api/videos/${v.id}`, {
@@ -493,7 +510,7 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
         input.addEventListener('blur', saveListVideoRename);
         input.addEventListener('keydown', e2 => {
           if (e2.key === 'Enter') { e2.preventDefault(); input.blur(); }
-          if (e2.key === 'Escape') { input.removeEventListener('blur', saveListVideoRename); renderVideos(searchInput.value); }
+          if (e2.key === 'Escape') { saved = true; renderVideos(searchInput.value); }
         });
       });
 
