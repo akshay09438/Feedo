@@ -36,6 +36,7 @@
   let comments         = [];
   let versions         = [];
   let annotations      = [];
+  let pendingAnnotation = null; // set by annotation tools, posted alongside next comment
   let capturedTimestamp = 0;
   let selectedFiles    = [];
   let player           = null;
@@ -512,6 +513,28 @@
         }
       }
 
+      // If there's a pending annotation, post it linked to this comment's timestamp
+      if (pendingAnnotation) {
+        try {
+          const aRes = await fetch(`/api/videos/${videoId}/annotations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              timestamp: capturedTimestamp,
+              type: pendingAnnotation.type,
+              data: pendingAnnotation.data,
+              author: displayName,
+              color: pendingAnnotation.type === 'draw' ? '#ef4444' : '#ffffff'
+            })
+          });
+          if (aRes.ok) {
+            const { annotation } = await aRes.json();
+            annotations.push(annotation);
+          }
+        } catch(e) { /* non-critical */ }
+        pendingAnnotation = null;
+      }
+
       comments.push(newComment);
       comments.sort((a, b) => a.timestamp - b.timestamp);
 
@@ -936,232 +959,201 @@
 
   // ── Annotations ───────────────────────────────────────────────────────────
   function setupAnnotations() {
-    const annotCanvas   = document.getElementById('annot-canvas');
-    const drawCanvas    = document.getElementById('draw-canvas');
-    const textOverlay   = document.getElementById('text-overlay');
-    const actionBar     = document.getElementById('annot-action-bar');
-    const postBtn       = document.getElementById('annot-post-btn');
-    const cancelBtn     = document.getElementById('annot-cancel-btn');
-    const textBtn       = document.getElementById('annot-text-btn');
-    const drawBtn       = document.getElementById('annot-draw-btn');
+    const annotCanvas = document.getElementById('annot-canvas');
+    const drawCanvas  = document.getElementById('draw-canvas');
+    const textOverlay = document.getElementById('text-overlay');
+    const textBtn     = document.getElementById('annot-text-btn');
+    const drawBtn     = document.getElementById('annot-draw-btn');
 
     if (!annotCanvas) return;
 
     const annotCtx = annotCanvas.getContext('2d');
     let mode = null; // 'draw' | 'text' | null
-    let strokes = []; // [{points:[{x,y}], color}]
+    let strokes = [];
     let currentStroke = [];
     let drawing = false;
-    let pendingText = null; // {x, y, input el}
     const DRAW_COLOR = '#ef4444';
-    const WINDOW = 1 / 30; // exactly one frame at 30fps (~0.033s)
+    const WINDOW = 1 / 30; // one frame at 30fps
 
-    // Size canvases to match video element
+    // ── Get the actual rendered video rect (excludes letterbox/pillarbox) ──
+    function getVideoRenderRect() {
+      const vw = videoEl.videoWidth  || videoEl.clientWidth  || 640;
+      const vh = videoEl.videoHeight || videoEl.clientHeight || 360;
+      const ew = videoEl.clientWidth  || 640;
+      const eh = videoEl.clientHeight || 360;
+      const videoAspect   = vw / vh;
+      const elementAspect = ew / eh;
+      let renderW, renderH, offsetX, offsetY;
+      if (videoAspect > elementAspect) {
+        renderW = ew; renderH = ew / videoAspect;
+        offsetX = 0;  offsetY = (eh - renderH) / 2;
+      } else {
+        renderH = eh; renderW = eh * videoAspect;
+        offsetY = 0;  offsetX = (ew - renderW) / 2;
+      }
+      return { left: Math.round(offsetX), top: Math.round(offsetY), width: Math.round(renderW), height: Math.round(renderH) };
+    }
+
+    // Size & position canvases to exactly cover the rendered video frame
     function sizeCanvases() {
-      const w = videoEl.clientWidth || videoEl.offsetWidth || 640;
-      const h = videoEl.clientHeight || videoEl.offsetHeight || 360;
-      annotCanvas.width = w;
-      annotCanvas.height = h;
-      drawCanvas.width = w;
-      drawCanvas.height = h;
+      const r = getVideoRenderRect();
+      [annotCanvas, drawCanvas, textOverlay].forEach(el => {
+        el.style.left   = r.left + 'px';
+        el.style.top    = r.top  + 'px';
+        el.style.width  = r.width  + 'px';
+        el.style.height = r.height + 'px';
+      });
+      annotCanvas.width = r.width;
+      annotCanvas.height = r.height;
+      drawCanvas.width  = r.width;
+      drawCanvas.height = r.height;
     }
     videoEl.addEventListener('loadedmetadata', sizeCanvases);
     window.addEventListener('resize', sizeCanvases);
-    sizeCanvases();
+    setTimeout(sizeCanvases, 300); // after video element settles
 
-    // ── Playback: render annotations for current time ──────────────────────
+    // ── Render annotations for current time ───────────────────────────────
     function renderAnnotationsAtTime(t) {
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      const visible = annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW);
-      visible.forEach(a => drawAnnotation(annotCtx, a, annotCanvas.width, annotCanvas.height));
-    }
-
-    function drawAnnotation(ctx, annot, w, h) {
-      if (annot.type === 'draw') {
-        const strks = annot.data.strokes || [];
-        strks.forEach(strk => {
-          if (!strk.points || strk.points.length < 2) return;
-          ctx.beginPath();
-          ctx.strokeStyle = annot.color || DRAW_COLOR;
-          ctx.lineWidth = 3;
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-          strk.points.forEach((pt, i) => {
-            const px = pt.x * w;
-            const py = pt.y * h;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
+      const w = annotCanvas.width, h = annotCanvas.height;
+      annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW).forEach(a => {
+        if (a.type === 'draw') {
+          (a.data.strokes || []).forEach(strk => {
+            if (!strk.points || strk.points.length < 2) return;
+            annotCtx.beginPath();
+            annotCtx.strokeStyle = a.color || DRAW_COLOR;
+            annotCtx.lineWidth = 3; annotCtx.lineCap = 'round'; annotCtx.lineJoin = 'round';
+            strk.points.forEach((pt, i) => {
+              const px = pt.x * w, py = pt.y * h;
+              i === 0 ? annotCtx.moveTo(px, py) : annotCtx.lineTo(px, py);
+            });
+            annotCtx.stroke();
           });
-          ctx.stroke();
-        });
-      } else if (annot.type === 'text') {
-        const d = annot.data;
-        const px = d.x * w;
-        const py = d.y * h;
-        ctx.font = `bold 18px system-ui, sans-serif`;
-        ctx.fillStyle = annot.color || '#ffffff';
-        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-        ctx.lineWidth = 3;
-        ctx.strokeText(d.text || '', px, py);
-        ctx.fillText(d.text || '', px, py);
-      }
+        } else if (a.type === 'text') {
+          const px = a.data.x * w, py = a.data.y * h;
+          annotCtx.font = 'bold 18px system-ui, sans-serif';
+          annotCtx.strokeStyle = 'rgba(0,0,0,0.85)'; annotCtx.lineWidth = 3;
+          annotCtx.strokeText(a.data.text || '', px, py);
+          annotCtx.fillStyle = a.color || '#ffffff';
+          annotCtx.fillText(a.data.text || '', px, py);
+        }
+      });
     }
 
-    // Use rAF loop for frame-accurate rendering (no timeupdate lag)
+    // rAF loop — frame-accurate, no timeupdate lag
     (function rafLoop() {
       if (!mode) renderAnnotationsAtTime(videoEl.currentTime);
       requestAnimationFrame(rafLoop);
     })();
 
-    // ── Cancel / cleanup ───────────────────────────────────────────────────
-    function cancelAnnotation() {
-      mode = null;
-      strokes = [];
-      currentStroke = [];
-      drawing = false;
+    // ── Helpers to funnel annotation into the comment box ─────────────────
+    function finaliseAnnotation(type, data) {
+      pendingAnnotation = { type, data };
+      capturedTimestamp = videoEl.currentTime;
+      commentAtTime.textContent = formatTime(capturedTimestamp);
+      commentAtBadge.style.display = 'inline-flex';
+      // Pre-fill comment box
+      const label = type === 'text' ? `[Text] ${data.text}` : '[Drawing]';
+      if (!commentText.value.trim()) commentText.value = label;
+      // Clean up overlay
+      mode = null; strokes = []; currentStroke = []; drawing = false;
       drawCanvas.style.display = 'none';
       textOverlay.style.display = 'none';
       textOverlay.innerHTML = '';
-      actionBar.style.display = 'none';
+      drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
       textBtn.classList.remove('active');
       drawBtn.classList.remove('active');
-      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      renderAnnotationsAtTime(videoEl.currentTime);
+      // Focus comment box
+      commentText.focus();
+      commentText.setSelectionRange(commentText.value.length, commentText.value.length);
     }
 
-    cancelBtn.addEventListener('click', cancelAnnotation);
-
-    // ── Post annotation ────────────────────────────────────────────────────
-    async function postAnnotation() {
-      const ts = videoEl.currentTime;
-      const displayName = localStorage.getItem('feedo_display_name') || 'Admin';
-
-      let data;
-      if (mode === 'draw') {
-        if (strokes.length === 0) { showToast('Draw something first', 'error'); return; }
-        // Normalise stroke coords to 0-1
-        const normStrokes = strokes.map(strk => ({
-          points: strk.points.map(pt => ({
-            x: pt.x / drawCanvas.width,
-            y: pt.y / drawCanvas.height
-          }))
-        }));
-        data = { strokes: normStrokes };
-      } else if (mode === 'text') {
-        const inp = textOverlay.querySelector('.annot-text-input-overlay');
-        const txt = inp ? inp.value.trim() : '';
-        if (!txt) { showToast('Enter some text first', 'error'); return; }
-        const left = parseFloat(inp.style.left) / drawCanvas.width;
-        const top  = parseFloat(inp.style.top)  / drawCanvas.height;
-        data = { text: txt, x: left, y: top };
-      } else return;
-
-      postBtn.disabled = true;
-      postBtn.textContent = '…';
-
-      try {
-        const res = await fetch(`/api/videos/${videoId}/annotations`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timestamp: ts, type: mode, data, author: displayName, color: mode === 'draw' ? DRAW_COLOR : '#ffffff' })
-        });
-        if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
-        const { annotation, comment } = await res.json();
-        annotations.push(annotation);
-        comments.push(comment);
-        comments.sort((a, b) => a.timestamp - b.timestamp);
-        renderComments();
-        if (player) player.renderMarkers();
-        showToast('Annotation posted', 'success');
-        cancelAnnotation();
-      } catch(e) {
-        showToast('Network error', 'error');
-      } finally {
-        postBtn.disabled = false;
-        postBtn.textContent = 'Post';
-      }
+    function cancelAnnotation() {
+      pendingAnnotation = null;
+      mode = null; strokes = []; currentStroke = []; drawing = false;
+      drawCanvas.style.display = 'none';
+      textOverlay.style.display = 'none';
+      textOverlay.innerHTML = '';
+      drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
+      textBtn.classList.remove('active');
+      drawBtn.classList.remove('active');
     }
 
-    postBtn.addEventListener('click', postAnnotation);
+    // Escape key cancels annotation mode
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && mode) cancelAnnotation();
+    });
 
-    // ── Draw mode ──────────────────────────────────────────────────────────
+    // ── Draw mode ─────────────────────────────────────────────────────────
     function startDrawMode() {
-      if (videoEl.paused === false) videoEl.pause();
+      if (!videoEl.paused) videoEl.pause();
       sizeCanvases();
-      mode = 'draw';
-      strokes = [];
+      mode = 'draw'; strokes = [];
       drawBtn.classList.add('active');
       textBtn.classList.remove('active');
       drawCanvas.style.display = 'block';
       textOverlay.style.display = 'none';
       textOverlay.innerHTML = '';
-      actionBar.style.display = 'flex';
 
       const drawCtx = drawCanvas.getContext('2d');
       drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
 
       drawCanvas.onmousedown = e => {
-        drawing = true;
-        currentStroke = [];
+        drawing = true; currentStroke = [];
         const r = drawCanvas.getBoundingClientRect();
-        const scaleX = drawCanvas.width / r.width;
-        const scaleY = drawCanvas.height / r.height;
-        currentStroke.push({ x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY });
+        const sx = drawCanvas.width / r.width, sy = drawCanvas.height / r.height;
+        currentStroke.push({ x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy });
         drawCtx.beginPath();
-        drawCtx.strokeStyle = DRAW_COLOR;
-        drawCtx.lineWidth = 3;
-        drawCtx.lineCap = 'round';
-        drawCtx.lineJoin = 'round';
+        drawCtx.strokeStyle = DRAW_COLOR; drawCtx.lineWidth = 3;
+        drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
         drawCtx.moveTo(currentStroke[0].x, currentStroke[0].y);
       };
       drawCanvas.onmousemove = e => {
         if (!drawing) return;
         const r = drawCanvas.getBoundingClientRect();
-        const scaleX = drawCanvas.width / r.width;
-        const scaleY = drawCanvas.height / r.height;
-        const pt = { x: (e.clientX - r.left) * scaleX, y: (e.clientY - r.top) * scaleY };
+        const sx = drawCanvas.width / r.width, sy = drawCanvas.height / r.height;
+        const pt = { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
         currentStroke.push(pt);
-        drawCtx.lineTo(pt.x, pt.y);
-        drawCtx.stroke();
+        drawCtx.lineTo(pt.x, pt.y); drawCtx.stroke();
       };
-      drawCanvas.onmouseup = () => {
+      const finishStroke = () => {
         if (!drawing) return;
         drawing = false;
         if (currentStroke.length > 1) strokes.push({ points: currentStroke });
         currentStroke = [];
       };
-      drawCanvas.onmouseleave = () => {
-        if (drawing && currentStroke.length > 1) strokes.push({ points: currentStroke });
-        drawing = false;
-        currentStroke = [];
-      };
+      drawCanvas.onmouseup = finishStroke;
+      drawCanvas.onmouseleave = finishStroke;
     }
 
+    // Click draw button: first click = start, second click = done (funnel to comment)
     drawBtn.addEventListener('click', () => {
-      if (mode === 'draw') { cancelAnnotation(); return; }
+      if (mode === 'draw') {
+        // Finish drawing — normalise to 0-1 relative to canvas size
+        if (strokes.length === 0) { cancelAnnotation(); return; }
+        const normStrokes = strokes.map(strk => ({
+          points: strk.points.map(pt => ({ x: pt.x / drawCanvas.width, y: pt.y / drawCanvas.height }))
+        }));
+        finaliseAnnotation('draw', { strokes: normStrokes });
+        return;
+      }
       startDrawMode();
     });
 
-    // ── Text mode ──────────────────────────────────────────────────────────
+    // ── Text mode ─────────────────────────────────────────────────────────
     function startTextMode() {
-      if (videoEl.paused === false) videoEl.pause();
+      if (!videoEl.paused) videoEl.pause();
       sizeCanvases();
       mode = 'text';
       textBtn.classList.add('active');
       drawBtn.classList.remove('active');
       drawCanvas.style.display = 'none';
-      drawCanvas.onmousedown = null;
-      drawCanvas.onmousemove = null;
-      drawCanvas.onmouseup = null;
       textOverlay.style.display = 'block';
-      textOverlay.innerHTML = '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;pointer-events:none;white-space:nowrap;">Click where you want to place text</div>';
-      actionBar.style.display = 'flex';
+      textOverlay.innerHTML = '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;pointer-events:none;white-space:nowrap;">Click to place text, drag to move</div>';
 
       textOverlay.onclick = e => {
-        if (e.target !== textOverlay && !e.target.closest('div[style*="pointer-events:none"]')) return;
-        // Remove instruction label
-        textOverlay.querySelector('div[style*="pointer-events:none"]')?.remove();
-        textOverlay.onclick = null;
+        if (textOverlay.querySelector('.annot-text-input-overlay')) return; // already placed
+        textOverlay.querySelector('div')?.remove();
 
         const rect = textOverlay.getBoundingClientRect();
         const x = e.clientX - rect.left;
@@ -1170,14 +1162,13 @@
         const inp = document.createElement('input');
         inp.type = 'text';
         inp.className = 'annot-text-input-overlay';
-        inp.placeholder = 'Type here…';
+        inp.placeholder = 'Type here, Enter to confirm…';
         inp.style.left = x + 'px';
         inp.style.top  = y + 'px';
-        inp.style.cursor = 'move';
         textOverlay.appendChild(inp);
         inp.focus();
 
-        // Make it draggable
+        // Drag to reposition
         let dragging = false, dragOffX = 0, dragOffY = 0;
         inp.addEventListener('mousedown', e2 => {
           dragging = true;
@@ -1194,7 +1185,15 @@
         textOverlay.addEventListener('mouseup', () => { if (dragging) { dragging = false; inp.focus(); } });
 
         inp.addEventListener('keydown', e2 => {
-          if (e2.key === 'Enter') { e2.preventDefault(); postAnnotation(); }
+          if (e2.key === 'Enter') {
+            e2.preventDefault();
+            const txt = inp.value.trim();
+            if (!txt) { showToast('Type something first', 'error'); return; }
+            const r = textOverlay.getBoundingClientRect();
+            const nx = parseFloat(inp.style.left) / r.width;
+            const ny = parseFloat(inp.style.top)  / r.height;
+            finaliseAnnotation('text', { text: txt, x: nx, y: ny });
+          }
           if (e2.key === 'Escape') cancelAnnotation();
         });
       };
