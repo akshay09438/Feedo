@@ -5,23 +5,26 @@
  * @param {number|null} activeProjectId
  * @param {number|null} activeVideoId
  */
-async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId) {
+async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId, preloadedVideos, preloadedProjects) {
   const container = document.getElementById('sidebar-container');
   if (!container) return;
 
-  let projects = [];
-  let allVideos = [];
+  let projects = preloadedProjects ? [...preloadedProjects] : [];
+  let allVideos = preloadedVideos ? [...preloadedVideos] : [];
 
-  // Fetch projects and all videos in parallel
-  try {
-    const [projRes, vidRes] = await Promise.all([
-      fetch('/api/projects'),
-      fetch('/api/videos')
-    ]);
-    if (projRes.ok) projects = await projRes.json();
-    if (vidRes.ok) allVideos = await vidRes.json();
-  } catch (e) {
-    // sidebar still renders, just empty
+  // Only fetch if no pre-loaded data was supplied
+  if (!preloadedVideos || !preloadedProjects) {
+    try {
+      const fetches = [];
+      if (!preloadedProjects) fetches.push(fetch('/api/projects'));
+      if (!preloadedVideos) fetches.push(fetch('/api/videos'));
+      const results = await Promise.all(fetches);
+      let i = 0;
+      if (!preloadedProjects && results[i] && results[i].ok) { projects = await results[i].json(); i++; }
+      if (!preloadedVideos && results[i] && results[i].ok) { allVideos = await results[i].json(); }
+    } catch (e) {
+      // sidebar still renders, just empty
+    }
   }
 
   // Build sidebar HTML

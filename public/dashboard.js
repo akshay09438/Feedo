@@ -32,7 +32,7 @@
 
     appLayout.style.display = 'flex';
     await Promise.all([loadProjects(), loadVideos()]);
-    initSidebar(null, null);
+    initSidebar(null, null, null, videos, projects);
 
     newVideoBtn.addEventListener('click', openUploadModal);
     newProjectBtn.addEventListener('click', openNewProjectModal);
