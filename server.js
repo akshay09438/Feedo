@@ -548,6 +548,8 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
 app.get('/api/videos/:id/stream', requireAuth, (req, res) => {
   const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   streamFile(req, res, path.join(VIDEOS_DIR, video.filename), video.mime_type);
 });
 
