@@ -26,20 +26,27 @@
     return localStorage.getItem('feedo_display_name') || '';
   }
 
-  // ── Name gate (blocking — shown to new visitors before comment form) ──────
+  // ── Name gate (always shown first — comment form hidden until confirmed) ───
   function showNameGate() {
+    // Hide everything in the comment area until name is confirmed
+    addCommentArea.style.display = 'none';
+    filterRow.style.display = 'none';
+
     const gate = document.createElement('div');
     gate.id = 'name-gate';
     gate.className = 'name-gate';
     gate.innerHTML = `
-      <p class="name-gate-label">Enter your name to comment</p>
+      <p class="name-gate-label">Enter your name to start commenting</p>
       <div class="name-gate-row">
-        <input type="text" id="name-gate-input" class="form-input" placeholder="Your name…" autocomplete="off" />
+        <input type="text" id="name-gate-input" class="form-input"
+          placeholder="Your name…"
+          value="${escapeHtml(getDisplayName())}"
+          autocomplete="off" />
         <button class="btn btn-primary" id="name-gate-confirm">Continue →</button>
       </div>
     `;
+    // Insert gate where the comment area is
     addCommentArea.parentNode.insertBefore(gate, addCommentArea);
-    addCommentArea.style.display = 'none';
 
     const input = gate.querySelector('#name-gate-input');
     const btn   = gate.querySelector('#name-gate-confirm');
@@ -169,12 +176,7 @@
 
       if (allowComments) {
         viewOnlyNote.style.display = 'none';
-        const savedName = getDisplayName();
-        if (savedName) {
-          showCommentForm();
-        } else {
-          showNameGate();
-        }
+        showNameGate();
       } else {
         addCommentArea.style.display = 'none';
         viewOnlyNote.style.display = 'block';
