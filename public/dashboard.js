@@ -167,12 +167,12 @@
     }
 
     videosGrid.innerHTML = '';
-    videos.forEach(v => {
-      videosGrid.appendChild(createVideoCard(v));
+    videos.forEach((v, i) => {
+      videosGrid.appendChild(createVideoCard(v, i));
     });
   }
 
-  function createVideoCard(video) {
+  function createVideoCard(video, cardIndex) {
     const card = document.createElement('div');
     card.className = 'card video-card';
     card.dataset.id = video.id;
@@ -207,11 +207,11 @@
       </div>
     `;
 
-    // Generate thumbnail from video frame
+    // Generate thumbnail — stagger by 200ms per card to avoid hammering the browser
     setTimeout(() => {
       const thumbEl = document.getElementById(`dash-thumb-${video.id}`);
       if (thumbEl) generateVideoThumbnail(`/api/videos/${video.id}/stream`, thumbEl);
-    }, 0);
+    }, (cardIndex || 0) * 200);
 
     // Navigate on card click
     card.addEventListener('click', e => {
@@ -563,7 +563,7 @@
     fileInput.addEventListener('change', () => {
       if (fileInput.files.length) setFile(fileInput.files[0]);
       fileInput.value = '';
-    });
+    }, { once: true });
 
     dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
     dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
@@ -587,6 +587,13 @@
       const projectId = projectSelect.value;
       if (projectId) formData.append('project_id', projectId);
 
+      const beforeUnloadHandler = e => {
+        e.preventDefault();
+        e.returnValue = 'Video is still uploading. Do not close this tab before the upload is complete.';
+      };
+      window.addEventListener('beforeunload', beforeUnloadHandler);
+
+      const uploadStart = Date.now();
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/videos');
 
@@ -594,11 +601,21 @@
         if (e.lengthComputable) {
           const pct = Math.round((e.loaded / e.total) * 100);
           progressFill.style.width = pct + '%';
-          progressLabel.textContent = pct + '%';
+          const elapsed = (Date.now() - uploadStart) / 1000;
+          if (elapsed > 0.5 && e.loaded > 0) {
+            const bps = e.loaded / elapsed;
+            const spd = bps >= 1048576
+              ? `${(bps / 1048576).toFixed(1)} MB/s`
+              : `${(bps / 1024).toFixed(0)} KB/s`;
+            progressLabel.textContent = `${pct}% · ${spd}`;
+          } else {
+            progressLabel.textContent = pct + '%';
+          }
         }
       });
 
       xhr.addEventListener('load', () => {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
         if (xhr.status === 201) {
           const video = JSON.parse(xhr.responseText);
           modal.close();
@@ -627,6 +644,7 @@
       });
 
       xhr.addEventListener('error', () => {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
         showToast('Network error during upload', 'error');
         uploadSubmit.disabled = false;
         content.querySelector('#upload-cancel').disabled = false;

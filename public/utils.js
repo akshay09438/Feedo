@@ -187,21 +187,22 @@ function showAttachment(att, srcUrl) {
  * Copy text to clipboard with fallback
  */
 async function copyToClipboard(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    try {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
-      showToast('Copied to clipboard!', 'success');
-      return;
-    } catch (e) { /* fallback */ }
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    showToast('Copied to clipboard!', 'success');
+  } catch(e) {
+    showToast('Copy failed — please copy manually', 'error');
   }
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand('copy');
-  ta.remove();
-  showToast('Copied to clipboard!', 'success');
 }
 
 /**
@@ -343,7 +344,9 @@ function createVideoPlayer(videoEl, opts = {}) {
     if (!markersContainer || !videoEl.duration || isNaN(videoEl.duration)) return;
     markersContainer.querySelectorAll('.progress-marker').forEach(m => m.remove());
 
-    const comments = commentsGetter ? commentsGetter() : [];
+    // Only render markers for top-level comments (replies inherit parent's timestamp, no separate pin)
+    const allComments = commentsGetter ? commentsGetter() : [];
+    const comments = allComments.filter(c => !c.parent_id);
     const duration = videoEl.duration;
 
     comments.forEach(comment => {
@@ -386,34 +389,61 @@ function createVideoPlayer(videoEl, opts = {}) {
   }
 
   if (progressTrack) {
-    progressTrack.addEventListener('mousedown', e => {
+    function startDrag(e) {
       isDragging = true;
       seekToPosition(getPositionFromEvent(e));
+      progressFill.style.transition = 'none';
+      progressHandle.style.transition = 'none';
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
       e.preventDefault();
-    });
+    }
 
-    progressTrack.addEventListener('click', e => {
-      seekToPosition(getPositionFromEvent(e));
-    });
+    function endDrag() {
+      if (!isDragging) return;
+      isDragging = false;
+      progressFill.style.transition = '';
+      progressHandle.style.transition = '';
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+
+    progressTrack.addEventListener('mousedown', startDrag);
 
     document.addEventListener('mousemove', e => {
       if (!isDragging) return;
-      seekToPosition(getPositionFromEvent(e));
+      const pos = getPositionFromEvent(e);
+      seekToPosition(pos);
+      // Update bar visually without waiting for timeupdate (which is suppressed during drag)
+      const pct = pos * 100;
+      if (progressFill) progressFill.style.width = pct + '%';
+      if (progressHandle) progressHandle.style.left = pct + '%';
     });
 
-    document.addEventListener('mouseup', () => { isDragging = false; });
+    document.addEventListener('mouseup', endDrag);
 
     progressTrack.addEventListener('touchstart', e => {
       isDragging = true;
       seekToPosition(getPositionFromEvent(e));
+      progressFill.style.transition = 'none';
+      progressHandle.style.transition = 'none';
     }, { passive: true });
 
     document.addEventListener('touchmove', e => {
       if (!isDragging) return;
-      seekToPosition(getPositionFromEvent(e));
+      const pos = getPositionFromEvent(e);
+      seekToPosition(pos);
+      const pct = pos * 100;
+      if (progressFill) progressFill.style.width = pct + '%';
+      if (progressHandle) progressHandle.style.left = pct + '%';
     }, { passive: true });
 
-    document.addEventListener('touchend', () => { isDragging = false; });
+    document.addEventListener('touchend', () => {
+      if (!isDragging) return;
+      isDragging = false;
+      progressFill.style.transition = '';
+      progressHandle.style.transition = '';
+    });
   }
 
   videoEl.addEventListener('play', updatePlayBtn);
@@ -457,9 +487,11 @@ function createVideoPlayer(videoEl, opts = {}) {
   });
 
   window.addEventListener('resize', fitVideo);
+  let _markerDebounce = null;
   videoEl.addEventListener('durationchange', () => {
     updateTime();
-    renderMarkers();
+    clearTimeout(_markerDebounce);
+    _markerDebounce = setTimeout(renderMarkers, 100);
   });
 
   videoEl.addEventListener('click', togglePlay);

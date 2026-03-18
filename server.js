@@ -31,10 +31,28 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
 // ── Database (sql.js — pure WASM, no native build required) ──────────────────
 let db;
 
+// Debounced write — batches rapid successive writes into one disk flush
+let _saveTimer = null;
 function saveDb() {
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    try {
+      const data = db.export();
+      fs.writeFileSync(DB_PATH, Buffer.from(data));
+    } catch(e) { console.error('saveDb error:', e); }
+  }, 300);
 }
+// Immediate flush used on process exit
+function saveDbNow() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  try {
+    const data = db.export();
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
+  } catch(e) { console.error('saveDbNow error:', e); }
+}
+process.on('SIGTERM', () => { saveDbNow(); process.exit(0); });
+process.on('SIGINT',  () => { saveDbNow(); process.exit(0); });
 
 function runDb(sql, params = []) {
   db.run(sql, params);
@@ -137,6 +155,8 @@ async function initDatabase() {
   // Add author and resolved columns to existing comments table if they don't exist
   try { db.run(`ALTER TABLE comments ADD COLUMN author TEXT`); } catch(e) {}
   try { db.run(`ALTER TABLE comments ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0`); } catch(e) {}
+  try { db.run(`ALTER TABLE comments ADD COLUMN parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE`); } catch(e) {}
+  try { db.run(`ALTER TABLE comments ADD COLUMN guest_id TEXT`); } catch(e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS attachments (
@@ -575,6 +595,7 @@ app.get('/api/videos/:id/stream', requireAuth, (req, res) => {
   if (!video) return res.status(404).json({ error: 'Video not found' });
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
   streamFile(req, res, path.join(VIDEOS_DIR, video.filename), video.mime_type);
 });
 
@@ -606,18 +627,27 @@ function _handleVideoComment(req, res) {
   const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
-  const { timestamp, text, display_name } = req.body;
-  if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
+  const { timestamp, text, display_name, parent_id } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
+    let ts;
+    if (parent_id) {
+      const parent = getDb('SELECT timestamp FROM comments WHERE id = ? AND video_id = ?', [parent_id, req.params.id]);
+      if (!parent) return res.status(404).json({ error: 'Parent comment not found' });
+      ts = parent.timestamp;
+    } else {
+      if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
+      ts = parseFloat(timestamp);
+    }
+
     const author = (display_name && display_name.trim()) ? display_name.trim() : 'admin';
     const id = insertDb(
-      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
-      [req.params.id, parseFloat(timestamp), text.trim(), author]
+      'INSERT INTO comments (video_id, timestamp, text, author, parent_id) VALUES (?, ?, ?, ?, ?)',
+      [req.params.id, ts, text.trim(), author, parent_id || null]
     );
     const comment = getDb('SELECT * FROM comments WHERE id = ?', [id]);
-    logHistory(req.params.id, null, author, 'comment_added', `Comment at ${parseFloat(timestamp).toFixed(1)}s`);
+    logHistory(req.params.id, null, author, parent_id ? 'reply_added' : 'comment_added', `Comment at ${ts.toFixed(1)}s`);
 
     // Handle single attachment (for annotation tool)
     if (req.file) {
@@ -920,15 +950,23 @@ app.post('/api/share/:token/comments', (req, res) => {
   const { video, allowComments } = resolved;
   if (!allowComments) return res.status(403).json({ error: 'Comments are disabled for this video' });
 
-  const { timestamp, text, guest_id, display_name } = req.body;
-  if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
+  const { timestamp, text, guest_id, display_name, parent_id } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
   try {
+    let ts;
+    if (parent_id) {
+      const parent = getDb('SELECT timestamp FROM comments WHERE id = ? AND video_id = ?', [parent_id, video.id]);
+      if (!parent) return res.status(404).json({ error: 'Parent comment not found' });
+      ts = parent.timestamp;
+    } else {
+      if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
+      ts = parseFloat(timestamp);
+    }
     const author = (display_name && display_name.trim()) ? display_name.trim() : (guest_id ? `guest:${guest_id}` : 'guest');
     const id = insertDb(
-      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
-      [video.id, parseFloat(timestamp), text.trim(), author]
+      'INSERT INTO comments (video_id, timestamp, text, author, guest_id, parent_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [video.id, ts, text.trim(), author, guest_id || null, parent_id || null]
     );
     const comment = getDb('SELECT * FROM comments WHERE id = ?', [id]);
     res.status(201).json({ ...comment, attachments: [] });
@@ -953,7 +991,7 @@ app.put('/api/share/:token/comments/:id', (req, res) => {
   // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
   const legacyAuthor = `guest:${guest_id}`;
   const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
-  const authorMatch  = comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
   if (!authorMatch) return res.status(403).json({ error: 'Cannot edit this comment' });
 
   try {
@@ -979,7 +1017,7 @@ app.delete('/api/share/:token/comments/:id', (req, res) => {
   // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
   const legacyAuthor = `guest:${guest_id}`;
   const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
-  const authorMatch  = comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
   if (!authorMatch) return res.status(403).json({ error: 'Cannot delete this comment' });
 
   try {
@@ -1069,6 +1107,7 @@ app.get('/api/share/:token/stream', (req, res) => {
   const resolved = resolveShareToken(req.params.token);
   if (!resolved) return res.status(404).json({ error: 'Share link not found' });
   const { video } = resolved;
+  res.setHeader('Cache-Control', 'private, max-age=3600');
   streamFile(req, res, path.join(VIDEOS_DIR, video.filename), video.mime_type);
 });
 

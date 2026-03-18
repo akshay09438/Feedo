@@ -186,13 +186,14 @@
 
   // ── Render Comments ───────────────────────────────────────────────────────
   function renderComments() {
-    const filtered = comments.filter(c => {
+    const topLevel = comments.filter(c => !c.parent_id);
+    const filtered = topLevel.filter(c => {
       if (commentFilter === 'open') return !c.resolved;
       if (commentFilter === 'resolved') return !!c.resolved;
       return true;
     });
 
-    commentCountBadge.textContent = comments.length;
+    commentCountBadge.textContent = topLevel.length;
 
     if (filtered.length === 0) {
       commentsList.innerHTML = `
@@ -200,7 +201,7 @@
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
           </svg>
-          <p>${comments.length === 0
+          <p>${topLevel.length === 0
             ? 'No comments yet. Click in the video to pause and add a comment.'
             : `No ${commentFilter === 'resolved' ? 'resolved' : 'open'} comments.`}</p>
         </div>`;
@@ -270,6 +271,22 @@
           </div>
           <div class="comment-date">${date}</div>
           <div class="comment-attachments" id="att-${comment.id}"></div>
+          <div class="replies-list" id="replies-list-${comment.id}"></div>
+          <div class="reply-thread-actions">
+            <button class="reply-btn">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/>
+              </svg>
+              Reply
+            </button>
+            <div class="reply-form-wrap" id="reply-form-${comment.id}" style="display:none;">
+              <textarea class="comment-textarea reply-textarea" placeholder="Write a reply…" rows="2" style="min-height:60px;"></textarea>
+              <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
+                <button class="btn btn-secondary reply-cancel-btn" style="font-size:12px;padding:4px 10px;">Cancel</button>
+                <button class="btn btn-primary reply-submit-btn" style="font-size:12px;padding:4px 10px;">Post Reply</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -317,7 +334,127 @@
       });
     }
 
+    // Render existing replies
+    const repliesList = card.querySelector(`#replies-list-${comment.id}`);
+    if (repliesList) {
+      comments.filter(r => r.parent_id === comment.id)
+        .forEach(r => repliesList.appendChild(buildAdminReplyCard(r)));
+    }
+
+    // Reply form listeners
+    const replyBtn = card.querySelector('.reply-btn');
+    const replyFormWrap = card.querySelector(`#reply-form-${comment.id}`);
+    if (replyBtn && replyFormWrap) {
+      replyBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const visible = replyFormWrap.style.display !== 'none';
+        replyFormWrap.style.display = visible ? 'none' : 'block';
+        if (!visible) replyFormWrap.querySelector('.reply-textarea').focus();
+      });
+      replyFormWrap.querySelector('.reply-cancel-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        replyFormWrap.style.display = 'none';
+      });
+      const doSubmitReply = () => submitAdminReply(comment.id, card);
+      replyFormWrap.querySelector('.reply-submit-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        doSubmitReply();
+      });
+      replyFormWrap.querySelector('.reply-textarea').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSubmitReply(); }
+      });
+    }
+
     return card;
+  }
+
+  // ── Admin Reply Card ───────────────────────────────────────────────────────
+  function buildAdminReplyCard(reply) {
+    const card = document.createElement('div');
+    card.className = 'reply-card';
+    card.dataset.id = reply.id;
+
+    const authorRaw = reply.author || 'guest';
+    const displayAuthor = authorRaw.startsWith('guest:') ? 'Guest' : authorRaw;
+    const pillColor = getAuthorColor(authorRaw);
+    const date = timeAgo(reply.created_at);
+
+    card.innerHTML = `
+      <div class="reply-header">
+        <span class="timestamp-pill reply-timestamp-pill" data-ts="${reply.timestamp}" style="background:${pillColor}22; border-color:${pillColor}44; color:${pillColor};">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+          ${formatTime(reply.timestamp)}
+        </span>
+        <span class="comment-author-label" style="font-size:12px;">${escapeHtml(displayAuthor)}</span>
+        <span class="reply-date">${date}</span>
+        <div class="comment-actions">
+          <button class="reply-delete-btn" data-id="${reply.id}" title="Delete">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="reply-text">${escapeHtml(reply.text)}</div>
+    `;
+
+    card.addEventListener('click', e => {
+      if (e.target.closest('button')) return;
+      player.seekTo(reply.timestamp);
+    });
+
+    card.querySelector('.reply-delete-btn').addEventListener('click', async e => {
+      e.stopPropagation();
+      try {
+        const res = await fetch(`/api/comments/${reply.id}`, { method: 'DELETE' });
+        if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
+        comments = comments.filter(c => c.id !== reply.id);
+        card.remove();
+        showToast('Reply deleted', 'success');
+      } catch(e) { showToast('Network error', 'error'); }
+    });
+
+    return card;
+  }
+
+  // ── Submit Admin Reply ─────────────────────────────────────────────────────
+  async function submitAdminReply(parentId, commentCard) {
+    const replyFormWrap = commentCard.querySelector(`#reply-form-${parentId}`);
+    if (!replyFormWrap) return;
+    const textarea  = replyFormWrap.querySelector('.reply-textarea');
+    const submitBtn = replyFormWrap.querySelector('.reply-submit-btn');
+    const text = textarea.value.trim();
+    if (!text) { textarea.focus(); showToast('Please enter a reply', 'error'); return; }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Posting…';
+    try {
+      const res = await fetch(`/api/videos/${videoId}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, parent_id: parentId })
+      });
+      if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
+      const newReply = await res.json();
+      newReply.attachments = [];
+      comments.push(newReply);
+
+      const repliesList = commentCard.querySelector(`#replies-list-${parentId}`);
+      if (repliesList) repliesList.appendChild(buildAdminReplyCard(newReply));
+
+      textarea.value = '';
+      replyFormWrap.style.display = 'none';
+      showToast('Reply posted', 'success');
+    } catch(e) {
+      showToast('Network error', 'error');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Post Reply';
+    }
   }
 
   // ── Edit Comment ──────────────────────────────────────────────────────────
@@ -361,10 +498,11 @@
       }
       const updated = await res.json();
       const idx = comments.findIndex(c => c.id === id);
-      if (idx !== -1) {
-        comments[idx] = { ...comments[idx], text: updated.text };
-      }
-      renderComments();
+      if (idx !== -1) comments[idx] = { ...comments[idx], text: updated.text };
+      // Targeted update — avoids destroying open reply forms
+      const textEl = document.getElementById(`comment-text-${id}`);
+      if (textEl) textEl.textContent = updated.text;
+      cancelEditComment(id);
       showToast('Comment updated', 'success');
     } catch (e) {
       showToast('Network error', 'error');
@@ -379,7 +517,18 @@
       const updated = await res.json();
       const idx = comments.findIndex(c => c.id === id);
       if (idx !== -1) comments[idx] = { ...comments[idx], resolved: updated.resolved };
-      renderComments();
+      // Targeted DOM update — preserve open reply forms
+      const card = document.querySelector(`.comment-card[data-id="${id}"]`);
+      if (card) {
+        card.classList.toggle('comment-resolved', !!updated.resolved);
+        const btn = card.querySelector('.comment-resolve-btn');
+        if (btn) {
+          btn.classList.toggle('resolved', !!updated.resolved);
+          btn.title = updated.resolved ? 'Mark as open' : 'Mark as resolved';
+        }
+      } else {
+        renderComments();
+      }
       if (player) player.renderMarkers();
     } catch (e) {
       showToast('Network error', 'error');
@@ -395,7 +544,7 @@
         showToast(err.error || 'Failed to delete comment', 'error');
         return;
       }
-      comments = comments.filter(c => c.id !== id);
+      comments = comments.filter(c => c.id !== id && c.parent_id !== id);
       renderComments();
       if (player) player.renderMarkers();
       showToast('Comment deleted', 'success');
@@ -744,6 +893,12 @@
         addBtn.innerHTML = `<div class="spinner" style="width:12px;height:12px;border-width:2px;"></div>`;
       }
 
+      const beforeUnloadHandler = e => {
+        e.preventDefault();
+        e.returnValue = 'Video is still uploading. Do not close this tab before the upload is complete.';
+      };
+      window.addEventListener('beforeunload', beforeUnloadHandler);
+
       try {
         const res = await fetch(`/api/videos/${videoId}/versions`, {
           method: 'POST',
@@ -762,6 +917,7 @@
       } catch (e) {
         showToast('Network error', 'error');
       } finally {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
         if (addBtn) {
           addBtn.disabled = false;
           addBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
@@ -929,17 +1085,26 @@
   // ── Real-time Comment Polling ─────────────────────────────────────────────
   function startCommentPolling() {
     setInterval(async () => {
+      // Don't disrupt the user if they are actively typing or submitting
+      if (submitComment.disabled) return;
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl === commentText || activeEl.classList.contains('comment-edit-textarea') || activeEl.classList.contains('reply-textarea'))) return;
+      // Don't poll if an inline edit or reply form is currently open
+      if (document.querySelector('.comment-edit-form[style*="block"]')) return;
+      if (document.querySelector('.reply-form-wrap[style*="block"]')) return;
+
       try {
         const res = await fetch(`/api/videos/${videoId}/comments`);
         if (!res.ok) return;
         const fresh = await res.json();
 
-        // Only re-render if something changed (count or content)
+        // O(1) lookup diff using a Map — handles reordering correctly
+        const existingMap = new Map(comments.map(c => [c.id, c]));
         const changed =
           fresh.length !== comments.length ||
-          fresh.some((c, i) => {
-            const existing = comments[i];
-            return !existing || c.id !== existing.id || c.resolved !== existing.resolved || c.text !== existing.text;
+          fresh.some(c => {
+            const existing = existingMap.get(c.id);
+            return !existing || c.resolved !== existing.resolved || c.text !== existing.text;
           });
 
         if (changed) {

@@ -77,13 +77,13 @@
     }
 
     videosGrid.innerHTML = '';
-    videos.forEach(v => {
-      const card = createVideoCard(v);
+    videos.forEach((v, i) => {
+      const card = createVideoCard(v, i);
       videosGrid.appendChild(card);
     });
   }
 
-  function createVideoCard(video) {
+  function createVideoCard(video, cardIndex) {
     const card = document.createElement('div');
     card.className = 'card video-card';
     card.dataset.id = video.id;
@@ -152,8 +152,8 @@
       });
     });
 
-    // Generate thumbnail
-    generateVideoThumbnail(`/api/videos/${video.id}/stream`, dataUrl => {
+    // Generate thumbnail — stagger by 200ms per card
+    setTimeout(() => generateVideoThumbnail(`/api/videos/${video.id}/stream`, dataUrl => {
       if (dataUrl) {
         const thumbEl = card.querySelector(`#thumb-${video.id}`);
         if (thumbEl) {
@@ -165,7 +165,7 @@
           thumbEl.insertBefore(img, thumbEl.firstChild);
         }
       }
-    });
+    }), (cardIndex || 0) * 200);
 
     return card;
   }
@@ -179,7 +179,7 @@
 
     let called = false;
     const done = (result) => {
-      if (!called) { called = true; callback(result); }
+      if (!called) { called = true; video.src = ''; callback(result); }
     };
 
     video.addEventListener('loadedmetadata', () => {
@@ -429,7 +429,7 @@
     fileInput.addEventListener('change', () => {
       if (fileInput.files.length) setFile(fileInput.files[0]);
       fileInput.value = '';
-    });
+    }, { once: true });
 
     dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
     dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
@@ -451,6 +451,13 @@
       const name = videoNameInput.value.trim();
       if (name) formData.append('name', name);
 
+      const beforeUnloadHandler = e => {
+        e.preventDefault();
+        e.returnValue = 'Video is still uploading. Do not close this tab before the upload is complete.';
+      };
+      window.addEventListener('beforeunload', beforeUnloadHandler);
+
+      const uploadStart = Date.now();
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `/api/projects/${projectId}/videos`);
 
@@ -458,11 +465,21 @@
         if (e.lengthComputable) {
           const pct = Math.round((e.loaded / e.total) * 100);
           progressFill.style.width = pct + '%';
-          progressLabel.textContent = pct + '%';
+          const elapsed = (Date.now() - uploadStart) / 1000;
+          if (elapsed > 0.5 && e.loaded > 0) {
+            const bps = e.loaded / elapsed;
+            const spd = bps >= 1048576
+              ? `${(bps / 1048576).toFixed(1)} MB/s`
+              : `${(bps / 1024).toFixed(0)} KB/s`;
+            progressLabel.textContent = `${pct}% · ${spd}`;
+          } else {
+            progressLabel.textContent = pct + '%';
+          }
         }
       });
 
       xhr.addEventListener('load', () => {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
         if (xhr.status === 201) {
           const video = JSON.parse(xhr.responseText);
           modal.close();
@@ -482,6 +499,7 @@
       });
 
       xhr.addEventListener('error', () => {
+        window.removeEventListener('beforeunload', beforeUnloadHandler);
         showToast('Network error during upload', 'error');
         uploadSubmit.disabled = false;
         content.querySelector('#upload-cancel').disabled = false;

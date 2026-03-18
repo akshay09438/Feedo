@@ -138,12 +138,8 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
     toggleBtn.innerHTML = collapsed
       ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`
       : `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`;
-    // Fire resize events throughout the CSS transition so video re-fits in real time
-    const start = performance.now();
-    (function fireResize() {
-      window.dispatchEvent(new Event('resize'));
-      if (performance.now() - start < 250) requestAnimationFrame(fireResize);
-    })();
+    // Fire one resize at the end of the CSS transition
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 260);
   });
 
   const searchInput          = sidebar.querySelector('#sidebar-search-input');
@@ -570,16 +566,19 @@ async function initSidebar(activeProjectId, activeVideoId, activeVersionGroupId,
   });
 
   // ── Search ───────────────────────────────────────────────────────────────
+  let _searchTimer = null;
   searchInput.addEventListener('input', () => {
-    const q = searchInput.value;
-    renderProjects(q);
-    renderVideos(q);
-    // Auto-expand projects section if searching
-    if (q && !projectsOpen) {
-      projectsOpen = true;
-      projectsSectionContent.style.display = 'block';
-      projectsChevron.textContent = '▼';
-    }
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => {
+      const q = searchInput.value;
+      renderProjects(q);
+      renderVideos(q);
+      if (q && !projectsOpen) {
+        projectsOpen = true;
+        projectsSectionContent.style.display = 'block';
+        projectsChevron.style.transform = 'rotate(90deg)';
+      }
+    }, 150);
   });
 
   // ── Create project ───────────────────────────────────────────────────────

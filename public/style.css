@@ -1398,6 +1398,8 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   transition: left 0.05s linear;
 }
 .progress-track:hover .progress-track-handle { width: 16px; height: 16px; }
+.progress-track:hover { cursor: grab; }
+.progress-track:active { cursor: grabbing; }
 
 /* Comment markers on progress bar */
 .progress-marker {
@@ -1765,6 +1767,69 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 }
 .no-comments svg { color: var(--text-muted); }
 .no-comments p { font-size: 13px; color: var(--text-secondary); max-width: 200px; }
+
+/* ── Replies ──────────────────────────────────────────────────────────────── */
+.replies-list {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.reply-card {
+  background: var(--bg-hover);
+  border-left: 2px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.reply-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.reply-timestamp-pill {
+  font-size: 10px !important;
+  padding: 2px 6px !important;
+}
+.reply-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+.reply-text {
+  color: var(--text-primary);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.reply-thread-actions {
+  margin-top: 8px;
+}
+.reply-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.reply-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.reply-form-wrap {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
 
 /* Share header info */
 .share-header-info {
