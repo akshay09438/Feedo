@@ -130,12 +130,6 @@
       </div>
     `;
 
-    // Generate thumbnail from video frame
-    setTimeout(() => {
-      const thumbEl = document.getElementById(`thumb-${video.id}`);
-      if (thumbEl) generateVideoThumbnail(`/api/videos/${video.id}/stream`, thumbEl);
-    }, 0);
-
     // Navigate to video review page
     card.addEventListener('click', e => {
       if (e.target.closest('.card-thumb-btn') || e.target.closest('.btn-icon')) return;
@@ -208,7 +202,8 @@
 
   // ── Share Modal ───────────────────────────────────────────────────────────
   function showShareModal(video) {
-    const shareUrl = `${location.origin}/share/${video.share_token}`;
+    const editUrl = `${location.origin}/share/${video.share_token}`;
+    const viewUrl = video.view_token ? `${location.origin}/share/${video.view_token}` : null;
 
     const content = document.createElement('div');
     content.innerHTML = `
@@ -216,48 +211,44 @@
         <span class="modal-title">Share Video</span>
         <button class="modal-close" id="share-close">&times;</button>
       </div>
-      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:14px;">
-        Share this link with your client or team to get feedback.
+      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
+        Share these links with your client or team to get feedback.
       </p>
-      <div class="share-url-row">
-        <input type="text" value="${escapeHtml(shareUrl)}" readonly id="share-url-input" />
-        <button id="copy-share-btn">Copy</button>
+
+      <div style="margin-bottom:14px;">
+        <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">
+          ✏️ Can Comment &amp; Annotate
+        </div>
+        <div class="share-url-row">
+          <input type="text" value="${escapeHtml(editUrl)}" readonly id="share-edit-url" />
+          <button id="copy-edit-btn">Copy</button>
+        </div>
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:5px;">Viewers can add comments, drawings, and text annotations.</p>
       </div>
-      <div class="share-permission">
-        <label class="toggle-label">
-          <input type="checkbox" id="allow-comments-toggle" ${video.allow_comments ? 'checked' : ''} />
-          <span class="toggle-switch"></span>
-          Allow viewers to add comments
-        </label>
-        <p class="help-text">When enabled, anyone with the link can add timestamped comments</p>
-      </div>
-      <div class="share-permission-info" id="share-perm-info">
-        ${video.allow_comments ? '✅ Viewers can add comments' : '👁 View only — no comments allowed'}
-      </div>
+
+      ${viewUrl ? `
+      <div>
+        <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">
+          👁 View Only
+        </div>
+        <div class="share-url-row">
+          <input type="text" value="${escapeHtml(viewUrl)}" readonly id="share-view-url" />
+          <button id="copy-view-btn">Copy</button>
+        </div>
+        <p style="font-size:11px; color:var(--text-secondary); margin-top:5px;">Viewers can only watch the video and read comments.</p>
+      </div>` : ''}
     `;
 
     const modal = showModal(content);
     content.querySelector('#share-close').addEventListener('click', () => modal.close());
-    content.querySelector('#copy-share-btn').addEventListener('click', async () => {
-      await copyToClipboard(shareUrl);
+    content.querySelector('#copy-edit-btn').addEventListener('click', async () => {
+      await copyToClipboard(editUrl);
     });
-    content.querySelector('#allow-comments-toggle').addEventListener('change', async (e) => {
-      const allowed = e.target.checked ? 1 : 0;
-      try {
-        await fetch(`/api/videos/${video.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ allow_comments: allowed })
-        });
-        video.allow_comments = allowed;
-        content.querySelector('#share-perm-info').textContent =
-          allowed ? '✅ Viewers can add comments' : '👁 View only — no comments allowed';
-        showToast(allowed ? 'Comments enabled' : 'Comments disabled', 'info');
-      } catch (err) {
-        showToast('Failed to update permission', 'error');
-        e.target.checked = !e.target.checked;
-      }
-    });
+    if (viewUrl) {
+      content.querySelector('#copy-view-btn').addEventListener('click', async () => {
+        await copyToClipboard(viewUrl);
+      });
+    }
   }
 
   // ── Delete Video ──────────────────────────────────────────────────────────

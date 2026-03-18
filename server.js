@@ -337,7 +337,7 @@ app.get('/api/projects/:id', requireAuth, (req, res) => {
 
   const videos = allDb(`
     SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-           v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+           v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
            v.created_at, COUNT(c.id) AS comment_count
     FROM videos v
     LEFT JOIN comments c ON c.video_id = v.id
@@ -402,7 +402,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
       if (req.query.project_id === 'null' || req.query.project_id === '') {
         sql = `
           SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+                 v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
                  v.created_at, COUNT(c.id) AS comment_count, NULL AS project_name
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
@@ -414,7 +414,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
       } else {
         sql = `
           SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+                 v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
                  v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
@@ -428,7 +428,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
     } else {
       sql = `
         SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-               v.share_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
+               v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
                v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
         FROM videos v
         LEFT JOIN comments c ON c.video_id = v.id
@@ -946,12 +946,15 @@ app.put('/api/share/:token/comments/:id', (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
-  const { text, guest_id } = req.body;
+  const { text, guest_id, display_name } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
   if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
 
-  const expectedAuthor = `guest:${guest_id}`;
-  if (comment.author !== expectedAuthor) return res.status(403).json({ error: 'Cannot edit this comment' });
+  // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
+  const legacyAuthor = `guest:${guest_id}`;
+  const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
+  const authorMatch  = comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  if (!authorMatch) return res.status(403).json({ error: 'Cannot edit this comment' });
 
   try {
     runDb('UPDATE comments SET text = ? WHERE id = ?', [text.trim(), req.params.id]);
@@ -970,10 +973,14 @@ app.delete('/api/share/:token/comments/:id', (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
-  const { guest_id } = req.query;
+  const { guest_id, display_name } = req.query;
   if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
 
-  if (comment.author !== `guest:${guest_id}`) return res.status(403).json({ error: 'Cannot delete this comment' });
+  // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
+  const legacyAuthor = `guest:${guest_id}`;
+  const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
+  const authorMatch  = comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  if (!authorMatch) return res.status(403).json({ error: 'Cannot delete this comment' });
 
   try {
     runDb('DELETE FROM comments WHERE id = ?', [req.params.id]);

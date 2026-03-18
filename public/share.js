@@ -266,7 +266,15 @@
 
     const date = timeAgo(comment.created_at);
 
-    const isMyComment = allowComments && comment.author === `guest:${GUEST_ID}`;
+    // Author is stored as display_name (or legacy "guest:<id>" for old comments).
+    // A comment belongs to the current guest if the stored author matches their display_name
+    // OR matches the legacy guest:<id> format.
+    const storedDisplayName = getDisplayName();
+    const legacyKey = `guest:${GUEST_ID}`;
+    const isMyComment = allowComments && (
+      comment.author === legacyKey ||
+      (storedDisplayName && comment.author === storedDisplayName)
+    );
     const authorRaw = comment.author || 'guest';
     const displayAuthor = authorRaw.startsWith('guest:') ? authorRaw.slice(6) : authorRaw;
     const pillColor = getAuthorColor(authorRaw);
@@ -375,9 +383,10 @@
     const text = input.value.trim();
     if (!text) { showToast('Comment cannot be empty', 'error'); return; }
     try {
+      const displayName = getDisplayName();
       const res = await fetch(`/api/share/${token}/comments/${id}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, guest_id: GUEST_ID })
+        body: JSON.stringify({ text, guest_id: GUEST_ID, display_name: displayName })
       });
       if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
       const updated = await res.json();
@@ -404,7 +413,10 @@
   // ── Delete Comment ────────────────────────────────────────────────────────
   async function deleteComment(id) {
     try {
-      const res = await fetch(`/api/share/${token}/comments/${id}?guest_id=${encodeURIComponent(GUEST_ID)}`, { method: 'DELETE' });
+      const displayName = getDisplayName();
+      const params = new URLSearchParams({ guest_id: GUEST_ID });
+      if (displayName) params.set('display_name', displayName);
+      const res = await fetch(`/api/share/${token}/comments/${id}?${params.toString()}`, { method: 'DELETE' });
       if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
       comments = comments.filter(c => c.id !== id);
       renderComments();
