@@ -276,7 +276,8 @@
       (storedDisplayName && comment.author === storedDisplayName)
     );
     const authorRaw = comment.author || 'guest';
-    const displayAuthor = authorRaw.startsWith('guest:') ? authorRaw.slice(6) : authorRaw;
+    // Legacy "guest:<uuid>" → show as "Guest"; display_name stored directly → show as-is
+    const displayAuthor = authorRaw.startsWith('guest:') ? 'Guest' : authorRaw;
     const pillColor = getAuthorColor(authorRaw);
 
     card.innerHTML = `

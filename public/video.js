@@ -36,12 +36,22 @@
   let comments         = [];
   let versions         = [];
   let annotations      = [];
-  let pendingAnnotation = null; // set by annotation tools, posted alongside next comment
+  let pendingAnnotation = null;
   let capturedTimestamp = 0;
   let selectedFiles    = [];
   let player           = null;
-  let commentFilter    = 'all'; // 'all' | 'open' | 'resolved'
+  let commentFilter    = 'all';
   let historyOpen      = false;
+
+  // ── Per-author sequential color assignment ────────────────────────────────
+  const authorColorMap   = new Map();
+  const colorPalette     = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
+  function getAuthorColor(author) {
+    if (!authorColorMap.has(author)) {
+      authorColorMap.set(author, colorPalette[authorColorMap.size % colorPalette.length]);
+    }
+    return authorColorMap.get(author);
+  }
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
@@ -111,6 +121,11 @@
 
     // Load comments, versions, annotations
     await Promise.all([loadComments(), loadVersions(), loadAnnotations()]);
+
+    // Ask for display name if not set
+    if (!localStorage.getItem('feedo_display_name')) {
+      showAdminNameGate();
+    }
 
     // Setup everything
     setupCommentForm();
@@ -192,6 +207,9 @@
       return;
     }
 
+    // Seed color map in chronological order so colors are stable
+    comments.forEach(c => getAuthorColor(c.author || 'admin'));
+
     commentsList.innerHTML = '';
     filtered.forEach(c => commentsList.appendChild(buildCommentCard(c)));
   }
@@ -205,8 +223,8 @@
 
     const author = comment.author || 'admin';
     const isAdmin = !author.startsWith('guest:');
-    const displayAuthor = author.startsWith('guest:') ? author.slice(6) : author;
-    const pillColor = getUserColor(author);
+    const displayAuthor = author.startsWith('guest:') ? 'Guest' : author;
+    const pillColor = getAuthorColor(author);
 
     card.innerHTML = `
       <div class="comment-main-row">
@@ -417,6 +435,41 @@
       el.addEventListener('click', () => showAttachment(att, srcUrl));
       return el;
     }
+  }
+
+  // ── Admin name gate ────────────────────────────────────────────────────────
+  function showAdminNameGate() {
+    const addArea = document.querySelector('.add-comment-area');
+    if (!addArea) return;
+
+    const gate = document.createElement('div');
+    gate.id = 'admin-name-gate';
+    gate.className = 'name-gate';
+    gate.innerHTML = `
+      <p class="name-gate-label">Enter your name to start commenting</p>
+      <div class="name-gate-row">
+        <input type="text" id="admin-name-input" class="form-input" placeholder="Your name…" autocomplete="off" />
+        <button class="btn btn-primary" id="admin-name-confirm">Continue →</button>
+      </div>
+    `;
+    addArea.parentNode.insertBefore(gate, addArea);
+    addArea.style.display = 'none';
+
+    const input = gate.querySelector('#admin-name-input');
+    const btn   = gate.querySelector('#admin-name-confirm');
+
+    function confirm() {
+      const name = input.value.trim();
+      if (!name) { input.classList.add('input-error'); input.focus(); return; }
+      input.classList.remove('input-error');
+      localStorage.setItem('feedo_display_name', name);
+      gate.remove();
+      addArea.style.display = '';
+    }
+
+    btn.addEventListener('click', confirm);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') confirm(); });
+    setTimeout(() => input.focus(), 100);
   }
 
   // ── Comment Form ──────────────────────────────────────────────────────────
