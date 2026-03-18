@@ -774,7 +774,7 @@
 
   function showShareModal() {
     const editUrl = `${location.origin}/share/${video.share_token}`;
-    const viewUrl = `${location.origin}/share/${video.view_token}`;
+    const viewUrl = video.view_token ? `${location.origin}/share/${video.view_token}` : null;
 
     const content = document.createElement('div');
     content.innerHTML = `
@@ -797,6 +797,7 @@
         <p style="font-size:11px; color:var(--text-secondary); margin-top:5px;">Viewers can add comments, drawings, and text annotations.</p>
       </div>
 
+      ${viewUrl ? `
       <div>
         <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.05em;">
           👁 View Only
@@ -806,7 +807,7 @@
           <button id="copy-view-btn">Copy</button>
         </div>
         <p style="font-size:11px; color:var(--text-secondary); margin-top:5px;">Viewers can only watch the video and read comments.</p>
-      </div>
+      </div>` : ''}
     `;
 
     const modal = showModal(content);
@@ -814,9 +815,11 @@
     content.querySelector('#copy-edit-btn').addEventListener('click', async () => {
       await copyToClipboard(editUrl);
     });
-    content.querySelector('#copy-view-btn').addEventListener('click', async () => {
-      await copyToClipboard(viewUrl);
-    });
+    if (viewUrl) {
+      content.querySelector('#copy-view-btn').addEventListener('click', async () => {
+        await copyToClipboard(viewUrl);
+      });
+    }
   }
 
   // ── Delete Video Button ───────────────────────────────────────────────────

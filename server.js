@@ -1113,6 +1113,12 @@ app.get('/share/:token', (req, res) => {
   res.sendFile(path.join(ROOT, 'public', 'share.html'));
 });
 
+app.get('/dashboard', (req, res) => res.redirect('/'));
+
+// ── 404 handlers ─────────────────────────────────────────────────────────────
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
+app.use((req, res) => res.status(404).sendFile(path.join(ROOT, 'public', 'login.html')));
+
 // ── Boot: init DB then start server ──────────────────────────────────────────
 initDatabase().then(() => {
   app.listen(PORT, () => {
