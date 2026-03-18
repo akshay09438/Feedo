@@ -1212,6 +1212,12 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   overflow: hidden;
   width: 100%;
   position: relative;
+  /* Own GPU compositor layer — keeps canvas overlay from forcing video re-rasterize */
+  transform: translateZ(0);
+}
+#annot-canvas, #draw-canvas {
+  /* Each canvas on its own layer to avoid compositing with video */
+  will-change: contents;
 }
 [data-theme="light"] .video-wrapper { background: #e8e8e8; }
 

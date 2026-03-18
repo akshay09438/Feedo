@@ -868,8 +868,17 @@
         .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
     }
 
+    // Only redraw when currentTime actually changes — avoids 60fps canvas
+    // clear+draw while paused (which was killing video decode performance)
+    let _lastAnnotTime = -1;
     (function rafLoop() {
-      renderAtTime(videoEl.currentTime);
+      if (!document.hidden) {
+        const t = videoEl.currentTime;
+        if (t !== _lastAnnotTime) {
+          _lastAnnotTime = t;
+          renderAtTime(t);
+        }
+      }
       requestAnimationFrame(rafLoop);
     })();
 

@@ -1085,7 +1085,8 @@
   // ── Real-time Comment Polling ─────────────────────────────────────────────
   function startCommentPolling() {
     setInterval(async () => {
-      // Don't disrupt the user if they are actively typing or submitting
+      // Skip polling when tab is hidden or user is actively interacting
+      if (document.hidden) return;
       if (submitComment.disabled) return;
       const activeEl = document.activeElement;
       if (activeEl && (activeEl === commentText || activeEl.classList.contains('comment-edit-textarea') || activeEl.classList.contains('reply-textarea'))) return;
@@ -1115,7 +1116,7 @@
       } catch (e) {
         // silent — don't disrupt the user
       }
-    }, 5000);
+    }, 8000);
   }
 
   // ── Resize Handle ─────────────────────────────────────────────────────────
@@ -1219,8 +1220,15 @@
         .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color, w, h));
     }
 
+    let _lastAnnotTime = -1;
     (function rafLoop() {
-      if (!mode) renderAnnotationsAtTime(videoEl.currentTime);
+      if (!document.hidden && !mode) {
+        const t = videoEl.currentTime;
+        if (t !== _lastAnnotTime) {
+          _lastAnnotTime = t;
+          renderAnnotationsAtTime(t);
+        }
+      }
       requestAnimationFrame(rafLoop);
     })();
 
