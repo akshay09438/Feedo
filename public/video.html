@@ -45,6 +45,10 @@
           <canvas id="annot-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
           <canvas id="draw-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;touch-action:none;"></canvas>
           <div id="text-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;"></div>
+          <div id="annot-action-bar" class="annot-action-bar" style="display:none;">
+            <button class="annot-post-btn" id="annot-post-btn">✓ Post</button>
+            <button class="annot-cancel-btn-bar" id="annot-cancel-btn">✕ Cancel</button>
+          </div>
           <div class="annotation-toolbar" id="annotation-toolbar">
             <button class="annot-tool-btn" id="annot-text-btn" title="Add text">T</button>
             <button class="annot-tool-btn" id="annot-draw-btn" title="Draw">

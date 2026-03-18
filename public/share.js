@@ -21,46 +21,29 @@
   }
   const GUEST_ID = getGuestId();
 
-  // ── Display name prompt ───────────────────────────────────────────────────
-  function ensureDisplayName(callback) {
-    const existing = localStorage.getItem('feedo_display_name');
-    if (existing && existing.trim()) {
-      callback();
-      return;
-    }
+  // ── Display name — inline, non-blocking ──────────────────────────────────
+  function getDisplayName() {
+    return localStorage.getItem('feedo_display_name') || '';
+  }
 
-    // Show name prompt above the comment form
-    const addArea = document.getElementById('add-comment-area');
-    addArea.style.display = 'none';
-
-    const namePrompt = document.createElement('div');
-    namePrompt.id = 'name-prompt-area';
-    namePrompt.className = 'name-prompt-area';
-    namePrompt.innerHTML = `
-      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:10px;">Enter your name to comment</p>
-      <div style="display:flex; gap:8px;">
-        <input type="text" id="share-name-input" class="form-input" placeholder="Your name…" style="flex:1;" />
-        <button class="btn btn-primary" id="share-name-confirm" style="white-space:nowrap;">Confirm</button>
-      </div>
+  function injectNameField(addArea) {
+    if (document.getElementById('share-name-row')) return; // already injected
+    const existing = getDisplayName();
+    const row = document.createElement('div');
+    row.id = 'share-name-row';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+    row.innerHTML = `
+      <input type="text" id="share-name-input" class="form-input"
+        placeholder="Your name (optional)…"
+        value="${escapeHtml(existing)}"
+        style="flex:1;font-size:12px;padding:5px 9px;" />
     `;
-
-    addArea.parentNode.insertBefore(namePrompt, addArea);
-
-    const input = namePrompt.querySelector('#share-name-input');
-    const confirmBtn = namePrompt.querySelector('#share-name-confirm');
-
-    function confirmName() {
-      const name = input.value.trim();
-      if (!name) { input.focus(); return; }
-      localStorage.setItem('feedo_display_name', name);
-      namePrompt.remove();
-      addArea.style.display = 'block';
-      callback();
-    }
-
-    confirmBtn.addEventListener('click', confirmName);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') confirmName(); });
-    setTimeout(() => input.focus(), 50);
+    addArea.insertBefore(row, addArea.firstChild);
+    const inp = row.querySelector('#share-name-input');
+    inp.addEventListener('blur', () => {
+      const v = inp.value.trim();
+      if (v) localStorage.setItem('feedo_display_name', v);
+    });
   }
 
   // ── DOM refs ──────────────────────────────────────────────────────────────
@@ -79,20 +62,24 @@
   const versionTabs       = document.getElementById('version-tabs');
   const shareBadge        = document.getElementById('share-badge');
   const filterRow         = document.getElementById('comment-filter-row');
+  const selectedFilesList = document.getElementById('selected-files-list');
+  const attachBtn         = document.getElementById('attach-btn');
+  const attachmentInput   = document.getElementById('attachment-input');
 
   // ── State ─────────────────────────────────────────────────────────────────
-  let comments       = [];
-  let versions       = [];
-  let player         = null;
-  let allowComments  = false;
+  let comments          = [];
+  let versions          = [];
+  let annotations       = [];
+  let selectedFiles     = [];
+  let player            = null;
+  let allowComments     = false;
   let capturedTimestamp = 0;
-  let commentFilter  = 'all';
-  let currentVideoData = null;
+  let pendingAnnotation = null;
+  let commentFilter     = 'all';
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
     initTheme();
-
     try {
       const res = await fetch(`/api/share/${token}`);
       if (res.status === 404) {
@@ -110,50 +97,46 @@
       comments = data.comments || [];
       versions = data.versions || [];
       allowComments = !!data.allow_comments;
-      currentVideoData = video;
 
       document.title = `${video.name} — Feedo`;
       videoNameEl.textContent = video.name;
       projectBreadcrumb.textContent = project ? project.name : 'Feedo';
+      shareBadge.textContent = allowComments ? 'Shared · Can Comment' : 'View Only';
 
-      if (allowComments) {
-        shareBadge.textContent = 'Shared · Can Comment';
-      } else {
-        shareBadge.textContent = 'View Only';
-      }
-
-      // Set video source
       videoEl.src = `/api/share/${token}/stream`;
 
-      // Init player
       player = createVideoPlayer(videoEl, {
         commentsGetter: () => comments,
         onPause: () => {
-          if (allowComments && commentText) {
+          if (allowComments && commentText && !pendingAnnotation) {
             setTimeout(() => { if (videoEl.paused) commentText.focus(); }, 50);
           }
         }
       });
 
-      // Show/hide comment form
       if (allowComments) {
         addCommentArea.style.display = 'block';
         viewOnlyNote.style.display = 'none';
         filterRow.style.display = 'flex';
-        ensureDisplayName(setupCommentForm);
+        document.getElementById('annotation-toolbar').style.display = 'flex';
+        injectNameField(addCommentArea);
+        setupCommentForm();
         setupCommentFilters();
       } else {
         addCommentArea.style.display = 'none';
         viewOnlyNote.style.display = 'block';
       }
 
-      // Render versions bar
       if (versions.length > 1) {
         versionBar.style.display = 'flex';
         renderVersionTabs(video.id);
       }
 
       renderComments();
+      setupPanelResize();
+      setupPanelCollapse();
+      setupAnnotationRenderer();
+
     } catch (e) {
       document.body.innerHTML = `<div class="error-page"><h1>Load Error</h1><p>Could not load this shared video. Please try again.</p></div>`;
     }
@@ -165,17 +148,15 @@
     versions.forEach(v => {
       const tab = document.createElement('div');
       tab.className = 'version-tab' + (String(v.id) === String(activeVideoId) ? ' active' : '');
-
       const label = document.createElement('span');
       label.className = 'version-tab-label';
       label.textContent = v.version_name || `V${v.version_number}`;
       tab.appendChild(label);
       versionTabs.appendChild(tab);
-
       if (!tab.classList.contains('active')) {
-        tab.addEventListener('click', () => {
-          window.location.href = `/share/${v.share_token}`;
-        });
+        // Use same link type (edit vs view-only) when switching versions
+        const targetToken = allowComments ? v.share_token : (v.view_token || v.share_token);
+        tab.addEventListener('click', () => { window.location.href = `/share/${targetToken}`; });
       }
     });
   }
@@ -199,7 +180,6 @@
       if (commentFilter === 'resolved') return !!c.resolved;
       return true;
     });
-
     commentCountBadge.textContent = comments.length;
 
     if (filtered.length === 0) {
@@ -218,7 +198,6 @@
 
     commentsList.innerHTML = '';
     filtered.forEach(c => commentsList.appendChild(buildCommentCard(c)));
-
     if (player) player.renderMarkers();
   }
 
@@ -227,13 +206,8 @@
     card.className = 'comment-card' + (comment.resolved ? ' comment-resolved' : '');
     card.dataset.id = comment.id;
 
-    const rawTs = comment.created_at || '';
-    const ts = rawTs.includes('T') || rawTs.endsWith('Z') ? rawTs : rawTs.replace(' ', 'T') + 'Z';
-    const date = new Date(ts).toLocaleString(undefined, {
-      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-    });
+    const date = timeAgo(comment.created_at);
 
-    // Determine if this guest can edit/delete this comment
     const isMyComment = allowComments && comment.author === `guest:${GUEST_ID}`;
     const authorRaw = comment.author || 'guest';
     const displayAuthor = authorRaw.startsWith('guest:') ? authorRaw.slice(6) : authorRaw;
@@ -259,13 +233,13 @@
             <span class="comment-author-label">${isMyComment ? 'You' : escapeHtml(displayAuthor)}</span>
             ${isMyComment ? `
             <div class="comment-actions">
-              <button class="comment-edit-btn" data-id="${comment.id}" title="Edit comment">
+              <button class="comment-edit-btn" data-id="${comment.id}" title="Edit">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
               </button>
-              <button class="comment-delete-btn" data-id="${comment.id}" title="Delete comment">
+              <button class="comment-delete-btn" data-id="${comment.id}" title="Delete">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
@@ -288,32 +262,19 @@
       </div>
     `;
 
-    // Seek on timestamp
     card.querySelector('.timestamp-pill').addEventListener('click', () => {
       if (player) player.seekTo(comment.timestamp);
     });
 
-    // Resolve toggle
     if (allowComments) {
-      card.querySelector('.comment-resolve-btn').addEventListener('click', () => {
-        toggleResolve(comment.id);
-      });
+      card.querySelector('.comment-resolve-btn').addEventListener('click', () => toggleResolve(comment.id));
     }
 
-    // Edit/Delete (only for own guest comments)
     if (isMyComment) {
-      card.querySelector('.comment-edit-btn').addEventListener('click', () => {
-        startEditComment(comment.id);
-      });
-      card.querySelector('.comment-delete-btn').addEventListener('click', () => {
-        deleteComment(comment.id);
-      });
-      card.querySelector(`#comment-edit-cancel-${comment.id}`).addEventListener('click', () => {
-        cancelEditComment(comment.id);
-      });
-      card.querySelector(`#comment-edit-save-${comment.id}`).addEventListener('click', () => {
-        saveEditComment(comment.id);
-      });
+      card.querySelector('.comment-edit-btn').addEventListener('click', () => startEditComment(comment.id));
+      card.querySelector('.comment-delete-btn').addEventListener('click', () => deleteComment(comment.id));
+      card.querySelector(`#comment-edit-cancel-${comment.id}`).addEventListener('click', () => cancelEditComment(comment.id));
+      card.querySelector(`#comment-edit-save-${comment.id}`).addEventListener('click', () => saveEditComment(comment.id));
       card.querySelector(`#comment-edit-input-${comment.id}`).addEventListener('keydown', e => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditComment(comment.id); }
         if (e.key === 'Escape') cancelEditComment(comment.id);
@@ -333,50 +294,35 @@
 
   // ── Edit Comment ──────────────────────────────────────────────────────────
   function startEditComment(id) {
-    const textEl = document.getElementById(`comment-text-${id}`);
-    const formEl = document.getElementById(`comment-edit-form-${id}`);
-    if (!textEl || !formEl) return;
-    textEl.style.display = 'none';
-    formEl.style.display = 'block';
+    document.getElementById(`comment-text-${id}`).style.display = 'none';
+    document.getElementById(`comment-edit-form-${id}`).style.display = 'block';
     const input = document.getElementById(`comment-edit-input-${id}`);
     if (input) { input.focus(); input.select(); }
   }
-
   function cancelEditComment(id) {
-    const textEl = document.getElementById(`comment-text-${id}`);
-    const formEl = document.getElementById(`comment-edit-form-${id}`);
-    if (textEl) textEl.style.display = '';
-    if (formEl) formEl.style.display = 'none';
+    document.getElementById(`comment-text-${id}`).style.display = '';
+    document.getElementById(`comment-edit-form-${id}`).style.display = 'none';
     const c = comments.find(c => c.id === id);
     const input = document.getElementById(`comment-edit-input-${id}`);
     if (c && input) input.value = c.text;
   }
-
   async function saveEditComment(id) {
     const input = document.getElementById(`comment-edit-input-${id}`);
     if (!input) return;
     const text = input.value.trim();
     if (!text) { showToast('Comment cannot be empty', 'error'); return; }
-
     try {
       const res = await fetch(`/api/share/${token}/comments/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text, guest_id: GUEST_ID })
       });
-      if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || 'Failed to edit comment', 'error');
-        return;
-      }
+      if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
       const updated = await res.json();
       const idx = comments.findIndex(c => c.id === id);
       if (idx !== -1) comments[idx] = { ...comments[idx], text: updated.text };
       renderComments();
       showToast('Comment updated', 'success');
-    } catch (e) {
-      showToast('Network error', 'error');
-    }
+    } catch(e) { showToast('Network error', 'error'); }
   }
 
   // ── Resolve ───────────────────────────────────────────────────────────────
@@ -389,54 +335,40 @@
       if (idx !== -1) comments[idx] = { ...comments[idx], resolved: updated.resolved };
       renderComments();
       if (player) player.renderMarkers();
-    } catch (e) {
-      showToast('Network error', 'error');
-    }
+    } catch(e) { showToast('Network error', 'error'); }
   }
 
   // ── Delete Comment ────────────────────────────────────────────────────────
   async function deleteComment(id) {
     try {
-      const res = await fetch(`/api/share/${token}/comments/${id}?guest_id=${encodeURIComponent(GUEST_ID)}`, {
-        method: 'DELETE'
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || 'Failed to delete comment', 'error');
-        return;
-      }
+      const res = await fetch(`/api/share/${token}/comments/${id}?guest_id=${encodeURIComponent(GUEST_ID)}`, { method: 'DELETE' });
+      if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
       comments = comments.filter(c => c.id !== id);
       renderComments();
       if (player) player.renderMarkers();
       showToast('Comment deleted', 'success');
-    } catch (e) {
-      showToast('Network error', 'error');
-    }
+    } catch(e) { showToast('Network error', 'error'); }
   }
 
+  // ── Attachment display ────────────────────────────────────────────────────
   function buildAttachmentEl(att, srcUrl) {
     if (att.mime_type.startsWith('image/')) {
       const el = document.createElement('div');
-      el.className = 'att-thumb';
-      el.title = att.original_name;
+      el.className = 'att-thumb'; el.title = att.original_name;
       const img = document.createElement('img');
-      img.src = srcUrl;
-      img.alt = att.original_name;
-      img.loading = 'lazy';
+      img.src = srcUrl; img.alt = att.original_name; img.loading = 'lazy';
       el.appendChild(img);
       el.addEventListener('click', () => showAttachment(att, srcUrl));
       return el;
     } else if (att.mime_type.startsWith('video/')) {
       const el = document.createElement('div');
-      el.className = 'att-video-thumb';
-      el.title = att.original_name;
+      el.className = 'att-video-thumb'; el.title = att.original_name;
       el.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
       el.addEventListener('click', () => showAttachment(att, srcUrl));
       return el;
     } else {
       const el = document.createElement('div');
-      el.className = 'att-chip';
-      el.title = att.original_name;
+      el.className = 'att-chip'; el.title = att.original_name;
       el.innerHTML = `
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
@@ -447,62 +379,96 @@
     }
   }
 
+  // ── Selected files display ─────────────────────────────────────────────────
+  function renderSelectedFiles() {
+    if (!selectedFilesList) return;
+    selectedFilesList.innerHTML = '';
+    selectedFiles.forEach((f, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'file-chip';
+      chip.innerHTML = `<span>${escapeHtml(f.name)}</span><button class="file-chip-remove" data-index="${i}" title="Remove">&times;</button>`;
+      chip.querySelector('.file-chip-remove').addEventListener('click', () => {
+        selectedFiles.splice(i, 1); renderSelectedFiles();
+      });
+      selectedFilesList.appendChild(chip);
+    });
+  }
+
   // ── Comment Form ──────────────────────────────────────────────────────────
   function setupCommentForm() {
     if (!commentText || !submitComment) return;
 
     commentText.addEventListener('focus', () => {
       if (player) player.pause();
-      capturedTimestamp = videoEl.currentTime;
-      commentAtTime.textContent = formatTime(capturedTimestamp);
-      commentAtBadge.style.display = 'inline-flex';
+      if (!pendingAnnotation) {
+        capturedTimestamp = videoEl.currentTime;
+        commentAtTime.textContent = formatTime(capturedTimestamp);
+        commentAtBadge.style.display = 'inline-flex';
+      }
     });
 
     submitComment.addEventListener('click', submitNewComment);
-
-    // Enter to submit (not Shift+Enter)
     commentText.addEventListener('keydown', e => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        submitNewComment();
-      }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitNewComment(); }
     });
+
+    if (attachBtn && attachmentInput) {
+      attachBtn.addEventListener('click', () => attachmentInput.click());
+      attachmentInput.addEventListener('change', () => {
+        selectedFiles = [...selectedFiles, ...Array.from(attachmentInput.files)];
+        attachmentInput.value = '';
+        renderSelectedFiles();
+      });
+    }
   }
 
   async function submitNewComment() {
     const text = commentText.value.trim();
-    if (!text) {
-      commentText.focus();
-      showToast('Please enter a comment', 'error');
-      return;
-    }
+    if (!text) { commentText.focus(); showToast('Please enter a comment', 'error'); return; }
 
     submitComment.disabled = true;
     submitComment.textContent = 'Posting…';
-
-    const displayName = localStorage.getItem('feedo_display_name') || '';
+    // Read name from inline field, save it, fall back to "Guest"
+    const nameInp = document.getElementById('share-name-input');
+    const typedName = nameInp ? nameInp.value.trim() : '';
+    if (typedName) localStorage.setItem('feedo_display_name', typedName);
+    const displayName = typedName || localStorage.getItem('feedo_display_name') || 'Guest';
 
     try {
       const res = await fetch(`/api/share/${token}/comments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ timestamp: capturedTimestamp, text, guest_id: GUEST_ID, display_name: displayName })
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || 'Failed to post comment', 'error');
-        return;
-      }
+      if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
 
       const newComment = await res.json();
-      newComment.attachments = [];
+
+      // Upload attachments if any
+      if (selectedFiles.length > 0) {
+        const formData = new FormData();
+        selectedFiles.forEach(f => formData.append('files', f));
+        const attRes = await fetch(`/api/share/${token}/comments/${newComment.id}/attachments`, {
+          method: 'POST', body: formData
+        });
+        if (attRes.ok) {
+          newComment.attachments = await attRes.json();
+        } else {
+          showToast('Comment posted but attachments failed', 'info');
+          newComment.attachments = [];
+        }
+      } else {
+        newComment.attachments = [];
+      }
+
+      // Clear pending annotation flag (already saved in postAnnotation)
+      pendingAnnotation = null;
+
       comments.push(newComment);
       comments.sort((a, b) => a.timestamp - b.timestamp);
-
       commentText.value = '';
+      selectedFiles = [];
+      renderSelectedFiles();
       commentAtBadge.style.display = 'none';
-
       renderComments();
 
       const newCard = document.querySelector(`.comment-card[data-id="${newComment.id}"]`);
@@ -511,14 +477,312 @@
         newCard.classList.add('active-comment');
         setTimeout(() => newCard.classList.remove('active-comment'), 1500);
       }
-
       showToast('Comment added', 'success');
-    } catch (e) {
+    } catch(e) {
       showToast('Network error', 'error');
     } finally {
       submitComment.disabled = false;
       submitComment.textContent = 'Add Comment';
     }
+  }
+
+  // ── Panel Resize ──────────────────────────────────────────────────────────
+  function setupPanelResize() {
+    const handle = document.getElementById('panel-resize-handle');
+    const panel  = document.getElementById('comments-panel');
+    if (!handle || !panel) return;
+
+    let dragging = false, startX = 0, startW = 0;
+    handle.addEventListener('mousedown', e => {
+      dragging = true; startX = e.clientX; startW = panel.offsetWidth;
+      document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+    });
+    window.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const delta = startX - e.clientX;
+      panel.style.width = Math.max(240, Math.min(600, startW + delta)) + 'px';
+    });
+    window.addEventListener('mouseup', () => {
+      if (dragging) { dragging = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; }
+    });
+  }
+
+  // ── Panel Collapse ────────────────────────────────────────────────────────
+  function setupPanelCollapse() {
+    const btn   = document.getElementById('panel-collapse-btn');
+    const panel = document.getElementById('comments-panel');
+    const workspace = document.querySelector('.share-workspace');
+    if (!btn || !panel) return;
+
+    let collapsed = false;
+    btn.addEventListener('click', () => {
+      collapsed = !collapsed;
+      panel.style.width = collapsed ? '0' : '';
+      panel.style.overflow = collapsed ? 'hidden' : '';
+      panel.style.minWidth = collapsed ? '0' : '';
+      panel.style.padding = collapsed ? '0' : '';
+      const svg = btn.querySelector('svg polyline');
+      if (svg) svg.setAttribute('points', collapsed ? '15 18 9 12 15 6' : '9 18 15 12 9 6');
+      btn.title = collapsed ? 'Expand panel' : 'Collapse panel';
+    });
+  }
+
+  // ── Annotations (read + write) ────────────────────────────────────────────
+  function setupAnnotationRenderer() {
+    const annotCanvas = document.getElementById('annot-canvas');
+    if (!annotCanvas) return;
+    const annotCtx = annotCanvas.getContext('2d');
+    const WINDOW = 1 / 30;
+
+    async function loadAnnotations() {
+      try {
+        const res = await fetch(`/api/share/${token}/annotations`);
+        if (res.ok) annotations = await res.json();
+      } catch(e) { /* non-critical */ }
+    }
+
+    function sizeCanvases() {
+      const wrapper = videoEl.parentElement;
+      const w = wrapper.clientWidth  || 640;
+      const h = wrapper.clientHeight || 360;
+      for (const id of ['annot-canvas','draw-canvas','text-overlay']) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.style.left = '0px'; el.style.top = '0px';
+        el.style.width = w + 'px'; el.style.height = h + 'px';
+        if (el.tagName === 'CANVAS') { el.width = w; el.height = h; }
+      }
+    }
+
+    ['loadedmetadata','loadeddata','canplay'].forEach(ev => videoEl.addEventListener(ev, sizeCanvases));
+    window.addEventListener('resize', sizeCanvases);
+    setTimeout(sizeCanvases, 200); setTimeout(sizeCanvases, 800);
+
+    function drawAnnotOnCtx(ctx, type, data, color) {
+      const w = annotCanvas.width, h = annotCanvas.height;
+      if (type === 'draw') {
+        (data.strokes || []).forEach(strk => {
+          if (!strk.points || strk.points.length < 2) return;
+          ctx.beginPath();
+          ctx.strokeStyle = color || '#ef4444';
+          ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+          strk.points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x*w, p.y*h) : ctx.lineTo(p.x*w, p.y*h));
+          ctx.stroke();
+        });
+      } else if (type === 'text') {
+        ctx.font = 'bold 18px system-ui,sans-serif';
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 3;
+        ctx.strokeText(data.text || '', data.x * w, data.y * h);
+        ctx.fillStyle = color || '#ffffff';
+        ctx.fillText(data.text || '', data.x * w, data.y * h);
+      }
+    }
+
+    function renderAtTime(t) {
+      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
+      annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW)
+        .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
+    }
+
+    (function rafLoop() {
+      renderAtTime(videoEl.currentTime);
+      requestAnimationFrame(rafLoop);
+    })();
+
+    loadAnnotations();
+
+    // Drawing tools only if allowComments
+    if (!allowComments) return;
+    setupDrawingTools(sizeCanvases, drawAnnotOnCtx);
+  }
+
+  function setupDrawingTools(sizeCanvases, drawAnnotOnCtx) {
+    const drawCanvas = document.getElementById('draw-canvas');
+    const textOverlay = document.getElementById('text-overlay');
+    const actionBar  = document.getElementById('annot-action-bar');
+    const postBtn    = document.getElementById('annot-post-btn');
+    const cancelBtn  = document.getElementById('annot-cancel-btn');
+    const textBtn    = document.getElementById('annot-text-btn');
+    const drawBtn    = document.getElementById('annot-draw-btn');
+    if (!drawCanvas || !postBtn) return;
+
+    const DRAW_COLOR = '#ef4444';
+    let mode = null, strokes = [], currentStroke = [], drawing = false;
+
+    function cancelAnnotation() {
+      mode = null; strokes = []; currentStroke = []; drawing = false;
+      drawCanvas.style.display = 'none';
+      drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
+      textOverlay.style.display = 'none'; textOverlay.onclick = null; textOverlay.innerHTML = '';
+      actionBar.style.display = 'none';
+      textBtn.classList.remove('active'); drawBtn.classList.remove('active');
+      const v = commentText.value.trim();
+      if (v === '[Drawing]' || v.startsWith('[Text] ')) {
+        commentText.value = ''; commentAtBadge.style.display = 'none';
+      }
+      pendingAnnotation = null;
+    }
+
+    cancelBtn.addEventListener('click', cancelAnnotation);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && mode) cancelAnnotation(); });
+
+    async function postAnnotation() {
+      if (!mode) return;
+      let data;
+      if (mode === 'draw') {
+        if (strokes.length === 0) { showToast('Draw something first', 'error'); return; }
+        const w = drawCanvas.width || 1, h = drawCanvas.height || 1;
+        data = { strokes: strokes.map(strk => ({ points: strk.points.map(p => ({ x: p.x/w, y: p.y/h })) })) };
+      } else if (mode === 'text') {
+        const inp = textOverlay.querySelector('.annot-text-input-overlay');
+        const txt = inp ? inp.value.trim() : '';
+        if (!txt) { showToast('Type something first', 'error'); inp && inp.focus(); return; }
+        const tw = textOverlay.clientWidth  || 1;
+        const th = textOverlay.clientHeight || 1;
+        data = { text: txt, x: parseFloat(inp.style.left) / tw, y: parseFloat(inp.style.top) / th };
+      }
+
+      const ts = videoEl.currentTime;
+      const nameInp2 = document.getElementById('share-name-input');
+      const n2 = nameInp2 ? nameInp2.value.trim() : '';
+      if (n2) localStorage.setItem('feedo_display_name', n2);
+      const displayName = n2 || localStorage.getItem('feedo_display_name') || 'Guest';
+
+      postBtn.disabled = true; postBtn.textContent = '…';
+      try {
+        const res = await fetch(`/api/share/${token}/annotations`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timestamp: ts, type: mode, data, author: displayName,
+            color: mode === 'draw' ? DRAW_COLOR : '#ffffff' })
+        });
+        if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
+        const { annotation } = await res.json();
+        annotations.push(annotation);
+
+        pendingAnnotation = { type: mode, data };
+        capturedTimestamp = ts;
+
+        const label = mode === 'text' ? `[Text] ${data.text}` : '[Drawing]';
+        commentText.value = label;
+        commentAtTime.textContent = formatTime(ts);
+        commentAtBadge.style.display = 'inline-flex';
+
+        const savedMode = mode;
+        mode = null; strokes = []; currentStroke = []; drawing = false;
+        drawCanvas.style.display = 'none';
+        drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
+        textOverlay.style.display = 'none'; textOverlay.onclick = null; textOverlay.innerHTML = '';
+        actionBar.style.display = 'none';
+        textBtn.classList.remove('active'); drawBtn.classList.remove('active');
+
+        commentText.focus();
+        commentText.setSelectionRange(commentText.value.length, commentText.value.length);
+        showToast(savedMode === 'draw' ? 'Drawing saved — add your comment' : 'Text saved — add your comment', 'success');
+      } catch(e) {
+        showToast('Network error', 'error');
+      } finally {
+        postBtn.disabled = false; postBtn.textContent = '✓ Post';
+      }
+    }
+
+    postBtn.addEventListener('click', postAnnotation);
+
+    // Draw mode
+    drawBtn.addEventListener('click', () => {
+      if (mode === 'draw') { cancelAnnotation(); return; }
+      if (!videoEl.paused) videoEl.pause();
+      sizeCanvases();
+      mode = 'draw'; strokes = [];
+      drawBtn.classList.add('active'); textBtn.classList.remove('active');
+      textOverlay.style.display = 'none'; textOverlay.innerHTML = '';
+      actionBar.style.display = 'flex';
+
+      const drawCtx = drawCanvas.getContext('2d');
+      drawCanvas.style.display = 'block';
+      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+
+      drawCanvas.onmousedown = e => {
+        drawing = true; currentStroke = [];
+        const pt = { x: e.offsetX, y: e.offsetY };
+        currentStroke.push(pt);
+        drawCtx.beginPath();
+        drawCtx.strokeStyle = DRAW_COLOR; drawCtx.lineWidth = 3;
+        drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
+        drawCtx.moveTo(pt.x, pt.y);
+      };
+      drawCanvas.onmousemove = e => {
+        if (!drawing) return;
+        const pt = { x: e.offsetX, y: e.offsetY };
+        currentStroke.push(pt);
+        drawCtx.lineTo(pt.x, pt.y); drawCtx.stroke();
+      };
+      const finishStroke = () => {
+        if (!drawing) return; drawing = false;
+        if (currentStroke.length > 1) strokes.push({ points: [...currentStroke] });
+        currentStroke = [];
+      };
+      drawCanvas.onmouseup = finishStroke;
+      drawCanvas.onmouseleave = finishStroke;
+    });
+
+    // Text mode
+    textBtn.addEventListener('click', () => {
+      if (mode === 'text') { cancelAnnotation(); return; }
+      if (!videoEl.paused) videoEl.pause();
+      sizeCanvases();
+      mode = 'text';
+      textBtn.classList.add('active'); drawBtn.classList.remove('active');
+      drawCanvas.style.display = 'none';
+      drawCanvas.onmousedown = drawCanvas.onmousemove = drawCanvas.onmouseup = drawCanvas.onmouseleave = null;
+      actionBar.style.display = 'flex';
+
+      textOverlay.innerHTML = '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);color:#fff;font-size:12px;padding:5px 14px;border-radius:20px;pointer-events:none;white-space:nowrap;">Click anywhere to place your text</div>';
+      textOverlay.style.display = 'block';
+
+      textOverlay.onclick = e => {
+        if (e.target.closest('.annot-text-input-overlay')) return;
+        const existing = textOverlay.querySelector('.annot-text-input-overlay');
+        if (existing) { existing.focus(); return; }
+        textOverlay.querySelector('div')?.remove();
+
+        const x = Math.max(0, e.offsetX);
+        const y = Math.max(20, e.offsetY);
+
+        const inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'annot-text-input-overlay';
+        inp.placeholder = 'Type here…';
+        inp.style.left = x + 'px';
+        inp.style.top  = y + 'px';
+        textOverlay.appendChild(inp);
+        setTimeout(() => inp.focus(), 10);
+
+        let dragPending = false, dragging = false, ox = 0, oy = 0, startX = 0, startY = 0;
+        inp.addEventListener('mousedown', e2 => {
+          if (e2.target !== inp) return;
+          dragPending = true; dragging = false;
+          ox = e2.offsetX; oy = e2.offsetY;
+          startX = e2.clientX; startY = e2.clientY;
+          e2.preventDefault();
+        });
+        window.addEventListener('mousemove', e2 => {
+          if (!dragPending) return;
+          if (!dragging && (Math.abs(e2.clientX - startX) > 4 || Math.abs(e2.clientY - startY) > 4))
+            dragging = true;
+          if (!dragging) return;
+          const r = textOverlay.getBoundingClientRect();
+          inp.style.left = Math.max(0, e2.clientX - r.left - ox) + 'px';
+          inp.style.top  = Math.max(0, e2.clientY - r.top  - oy) + 'px';
+        });
+        window.addEventListener('mouseup', () => {
+          if (dragPending) { dragPending = false; if (!dragging) inp.focus(); dragging = false; }
+        });
+
+        inp.addEventListener('keydown', e2 => {
+          if (e2.key === 'Escape') { e2.stopPropagation(); cancelAnnotation(); }
+        });
+      };
+    });
   }
 
   // Init

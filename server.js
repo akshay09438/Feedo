@@ -112,6 +112,15 @@ async function initDatabase() {
   try { db.run(`ALTER TABLE videos ADD COLUMN version_group_id TEXT`); } catch(e) {}
   try { db.run(`ALTER TABLE videos ADD COLUMN version_number INTEGER NOT NULL DEFAULT 1`); } catch(e) {}
   try { db.run(`ALTER TABLE videos ADD COLUMN version_name TEXT`); } catch(e) {}
+  // Add view_token for separate view-only share links
+  try { db.run(`ALTER TABLE videos ADD COLUMN view_token TEXT`); } catch(e) {}
+  // Backfill view_token for existing videos
+  (() => {
+    const missing = allDb('SELECT id FROM videos WHERE view_token IS NULL');
+    for (const v of missing) {
+      runDb('UPDATE videos SET view_token = ? WHERE id = ?', [uuidv4(), v.id]);
+    }
+  })();
 
   db.run(`
     CREATE TABLE IF NOT EXISTS comments (
@@ -443,6 +452,7 @@ app.post('/api/videos', requireAuth, (req, res) => {
 
     const name = (req.body.name && req.body.name.trim()) || req.file.originalname.replace(/\.[^.]+$/, '');
     const shareToken = uuidv4();
+    const viewToken = uuidv4();
     const projectId = (req.body.project_id && req.body.project_id !== '' && req.body.project_id !== 'null')
       ? req.body.project_id
       : null;
@@ -450,8 +460,8 @@ app.post('/api/videos', requireAuth, (req, res) => {
 
     try {
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, 1, 'V1']
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1']
       );
       const video = getDb(`
         SELECT v.*, 0 AS comment_count, p.name AS project_name
@@ -477,12 +487,13 @@ app.post('/api/projects/:id/videos', requireAuth, (req, res) => {
 
     const name = (req.body.name && req.body.name.trim()) || req.file.originalname.replace(/\.[^.]+$/, '');
     const shareToken = uuidv4();
+    const viewToken = uuidv4();
     const versionGroupId = uuidv4();
 
     try {
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [req.params.id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, 1, 'V1']
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.params.id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1']
       );
       const video = getDb('SELECT *, 0 AS comment_count FROM videos WHERE id = ?', [id]);
       logHistory(id, req.params.id, 'admin', 'video_uploaded', `Video "${name}" uploaded to project`);
@@ -648,22 +659,13 @@ app.post('/api/videos/:id/annotations', requireAuth, (req, res) => {
     const safeColor = color || '#ef4444';
     const safeType = type || 'draw';
 
-    // Create linked comment
-    const label = safeType === 'text' ? `[Text] ${data.text || ''}` : '[Drawing]';
-    const commentId = insertDb(
-      'INSERT INTO comments (video_id, timestamp, text, author) VALUES (?, ?, ?, ?)',
-      [req.params.id, parseFloat(timestamp), label, safeAuthor]
-    );
-
     const annotId = insertDb(
-      'INSERT INTO annotations (video_id, timestamp, type, data, author, color, comment_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [req.params.id, parseFloat(timestamp), safeType, JSON.stringify(data), safeAuthor, safeColor, commentId]
+      'INSERT INTO annotations (video_id, timestamp, type, data, author, color) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.params.id, parseFloat(timestamp), safeType, JSON.stringify(data), safeAuthor, safeColor]
     );
 
     const annot = getDb('SELECT * FROM annotations WHERE id = ?', [annotId]);
-    const comment = getDb('SELECT * FROM comments WHERE id = ?', [commentId]);
-
-    res.status(201).json({ annotation: { ...annot, data: JSON.parse(annot.data) }, comment: { ...comment, attachments: [] } });
+    res.status(201).json({ annotation: { ...annot, data: JSON.parse(annot.data) } });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
@@ -728,10 +730,11 @@ app.post('/api/videos/:id/versions', requireAuth, (req, res) => {
 
       const name = (req.body.name && req.body.name.trim()) || parentVideo.name;
       const shareToken = uuidv4();
+      const viewToken = uuidv4();
 
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [parentVideo.project_id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, versionGroupId, newVersionNumber, newVersionName]
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [parentVideo.project_id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, newVersionNumber, newVersionName]
       );
 
       const newVideo = getDb('SELECT * FROM videos WHERE id = ?', [id]);
@@ -871,9 +874,19 @@ app.get('/api/attachments/:filename', requireAuth, (req, res) => {
 });
 
 // ── Share routes (public) ─────────────────────────────────────────────────────
+// Helper: resolve a token to a video + permission level
+function resolveShareToken(token) {
+  let video = getDb('SELECT * FROM videos WHERE share_token = ?', [token]);
+  if (video) return { video, allowComments: true };
+  video = getDb('SELECT * FROM videos WHERE view_token = ?', [token]);
+  if (video) return { video, allowComments: false };
+  return null;
+}
+
 app.get('/api/share/:token', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
 
   const project = video.project_id
     ? getDb('SELECT id, name FROM projects WHERE id = ?', [video.project_id])
@@ -893,18 +906,19 @@ app.get('/api/share/:token', (req, res) => {
   let versions = [];
   if (video.version_group_id) {
     versions = allDb(
-      'SELECT id, version_number, version_name, share_token FROM videos WHERE version_group_id = ? ORDER BY version_number ASC',
+      'SELECT id, version_number, version_name, share_token, view_token FROM videos WHERE version_group_id = ? ORDER BY version_number ASC',
       [video.version_group_id]
     );
   }
 
-  res.json({ video, project, comments: commentsWithAttachments, allow_comments: video.allow_comments, versions });
+  res.json({ video, project, comments: commentsWithAttachments, allow_comments: allowComments, versions });
 });
 
 app.post('/api/share/:token/comments', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
-  if (!video.allow_comments) return res.status(403).json({ error: 'Comments are disabled for this video' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Comments are disabled for this video' });
 
   const { timestamp, text, guest_id, display_name } = req.body;
   if (timestamp === undefined || timestamp === null) return res.status(400).json({ error: 'timestamp required' });
@@ -923,11 +937,11 @@ app.post('/api/share/:token/comments', (req, res) => {
   }
 });
 
-// Edit comment via share link (requires allow_comments + ownership by guest_id)
 app.put('/api/share/:token/comments/:id', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
-  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Edit not allowed' });
 
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
@@ -941,18 +955,17 @@ app.put('/api/share/:token/comments/:id', (req, res) => {
 
   try {
     runDb('UPDATE comments SET text = ? WHERE id = ?', [text.trim(), req.params.id]);
-    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
-    res.json(updated);
+    res.json(getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]));
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
 });
 
-// Delete comment via share link
 app.delete('/api/share/:token/comments/:id', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
-  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Edit not allowed' });
 
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
@@ -960,8 +973,7 @@ app.delete('/api/share/:token/comments/:id', (req, res) => {
   const { guest_id } = req.query;
   if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
 
-  const expectedAuthor = `guest:${guest_id}`;
-  if (comment.author !== expectedAuthor) return res.status(403).json({ error: 'Cannot delete this comment' });
+  if (comment.author !== `guest:${guest_id}`) return res.status(403).json({ error: 'Cannot delete this comment' });
 
   try {
     runDb('DELETE FROM comments WHERE id = ?', [req.params.id]);
@@ -971,11 +983,11 @@ app.delete('/api/share/:token/comments/:id', (req, res) => {
   }
 });
 
-// Resolve comment via share link
 app.patch('/api/share/:token/comments/:id/resolve', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
-  if (!video.allow_comments) return res.status(403).json({ error: 'Edit not allowed' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Edit not allowed' });
 
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
@@ -983,30 +995,85 @@ app.patch('/api/share/:token/comments/:id/resolve', (req, res) => {
   try {
     const newResolved = comment.resolved ? 0 : 1;
     runDb('UPDATE comments SET resolved = ? WHERE id = ?', [newResolved, req.params.id]);
-    const updated = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
-    res.json(updated);
+    res.json(getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]));
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
   }
 });
 
+app.get('/api/share/:token/annotations', (req, res) => {
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  try {
+    const rows = allDb('SELECT * FROM annotations WHERE video_id = ? ORDER BY timestamp ASC', [resolved.video.id]);
+    res.json(rows.map(r => ({ ...r, data: JSON.parse(r.data) })));
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/share/:token/annotations', (req, res) => {
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Annotations not allowed' });
+  const { timestamp, type, data, author, color } = req.body;
+  if (timestamp === undefined || !data) return res.status(400).json({ error: 'timestamp and data required' });
+  try {
+    const safeAuthor = (author && author.trim()) ? author.trim() : 'guest';
+    const safeColor = color || '#ef4444';
+    const safeType = type || 'draw';
+    const annotId = insertDb(
+      'INSERT INTO annotations (video_id, timestamp, type, data, author, color) VALUES (?, ?, ?, ?, ?, ?)',
+      [video.id, parseFloat(timestamp), safeType, JSON.stringify(data), safeAuthor, safeColor]
+    );
+    const annot = getDb('SELECT * FROM annotations WHERE id = ?', [annotId]);
+    res.status(201).json({ annotation: { ...annot, data: JSON.parse(annot.data) } });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('files', 10), (req, res) => {
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video, allowComments } = resolved;
+  if (!allowComments) return res.status(403).json({ error: 'Comments not allowed' });
+  const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
+  if (!comment) return res.status(404).json({ error: 'Comment not found' });
+  if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
+  try {
+    const inserted = [];
+    for (const file of req.files) {
+      const filename = file.filename;
+      const id = insertDb(
+        'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
+        [comment.id, filename, file.originalname, file.mimetype || 'application/octet-stream']
+      );
+      inserted.push(getDb('SELECT * FROM attachments WHERE id = ?', [id]));
+    }
+    res.status(201).json(inserted);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/share/:token/stream', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video } = resolved;
   streamFile(req, res, path.join(VIDEOS_DIR, video.filename), video.mime_type);
 });
 
 app.get('/api/share/:token/attachments/:filename', (req, res) => {
-  const video = getDb('SELECT * FROM videos WHERE share_token = ?', [req.params.token]);
-  if (!video) return res.status(404).json({ error: 'Share link not found' });
+  const resolved = resolveShareToken(req.params.token);
+  if (!resolved) return res.status(404).json({ error: 'Share link not found' });
+  const { video } = resolved;
 
   const att = getDb('SELECT * FROM attachments WHERE filename = ?', [req.params.filename]);
   if (!att) return res.status(404).json({ error: 'Attachment not found' });
 
-  const comment = getDb(
-    'SELECT * FROM comments WHERE id = ? AND video_id = ?',
-    [att.comment_id, video.id]
-  );
+  const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [att.comment_id, video.id]);
   if (!comment) return res.status(403).json({ error: 'Forbidden' });
 
   streamFile(req, res, path.join(ATTACHMENTS_DIR, att.filename), att.mime_type);

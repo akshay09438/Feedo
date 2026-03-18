@@ -1,6 +1,22 @@
 /* ── utils.js — shared helpers ──────────────────────────────────────────────── */
 
 /**
+ * Relative time — consistent across all timezones ("2 min ago", "3 hrs ago")
+ */
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const ts = dateStr.includes('T') || dateStr.endsWith('Z') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 5)   return 'just now';
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  // Fallback: show date in UTC so everyone sees the same value
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/**
  * Format seconds into "M:SS" or "H:MM:SS"
  */
 function formatTime(seconds) {
