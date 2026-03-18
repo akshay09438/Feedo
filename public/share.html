@@ -36,6 +36,7 @@
         <div id="text-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;"></div>
         <div id="annot-action-bar" class="annot-action-bar" style="display:none;">
           <button class="annot-post-btn" id="annot-post-btn">✓ Post</button>
+          <button class="annot-undo-btn" id="annot-undo-btn">↩ Undo</button>
           <button class="annot-cancel-btn-bar" id="annot-cancel-btn">✕ Cancel</button>
         </div>
         <div class="annotation-toolbar" id="annotation-toolbar" style="display:none;">
@@ -134,6 +135,7 @@
           placeholder="Click to pause &amp; comment…"
           rows="3"
         ></textarea>
+        <div class="enter-hint"><em>Press Enter to submit</em></div>
         <div class="selected-files-list" id="selected-files-list"></div>
         <div class="comment-form-footer">
           <button class="attach-btn" id="attach-btn" title="Attach files">

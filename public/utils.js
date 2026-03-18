@@ -527,6 +527,50 @@ function createVideoPlayer(videoEl, opts = {}) {
 }
 
 /**
+ * Generate a video thumbnail by seeking to 1s and capturing a canvas frame.
+ * streamUrl — the video stream URL
+ * containerEl — the DOM element to apply background-image to
+ */
+function generateVideoThumbnail(streamUrl, containerEl) {
+  const vid = document.createElement('video');
+  vid.crossOrigin = 'anonymous';
+  vid.preload = 'metadata';
+  vid.muted = true;
+  vid.playsInline = true;
+  vid.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;';
+  document.body.appendChild(vid);
+
+  let done = false;
+  function cleanup() {
+    if (!done) { done = true; if (vid.parentNode) vid.parentNode.removeChild(vid); }
+  }
+
+  vid.addEventListener('loadeddata', () => {
+    vid.currentTime = Math.min(1, vid.duration * 0.05 || 1);
+  });
+
+  vid.addEventListener('seeked', () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = vid.videoWidth || 320;
+      canvas.height = vid.videoHeight || 180;
+      canvas.getContext('2d').drawImage(vid, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+      containerEl.style.backgroundImage = `url(${dataUrl})`;
+      containerEl.style.backgroundSize = 'cover';
+      containerEl.style.backgroundPosition = 'center';
+      const icon = containerEl.querySelector('.card-thumb-icon, .card-film-icon');
+      if (icon) icon.style.opacity = '0';
+    } catch(e) { /* CORS or decode error — leave gradient */ }
+    cleanup();
+  });
+
+  vid.addEventListener('error', cleanup);
+  setTimeout(cleanup, 12000);
+  vid.src = streamUrl;
+}
+
+/**
  * Escape HTML special chars
  */
 function escapeHtml(str) {

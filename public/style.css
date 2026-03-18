@@ -1291,6 +1291,26 @@ textarea.form-input { resize: vertical; min-height: 80px; }
   cursor: pointer;
 }
 .annot-cancel-btn-bar:hover { background: rgba(0,0,0,0.9); }
+.annot-undo-btn {
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.annot-undo-btn:hover { background: rgba(0,0,0,0.9); }
+
+/* ── "Press Enter" hint ──────────────────────────────────────────────────── */
+.enter-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 3px 2px 0;
+}
+
+/* ── Comment card seek cursor ────────────────────────────────────────────── */
+.comment-card { cursor: pointer; }
 
 /* ── Name Prompt Area (share page) ───────────────────────────────────────── */
 .name-prompt-area {

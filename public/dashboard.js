@@ -207,6 +207,12 @@
       </div>
     `;
 
+    // Generate thumbnail from video frame
+    setTimeout(() => {
+      const thumbEl = document.getElementById(`dash-thumb-${video.id}`);
+      if (thumbEl) generateVideoThumbnail(`/api/videos/${video.id}/stream`, thumbEl);
+    }, 0);
+
     // Navigate on card click
     card.addEventListener('click', e => {
       if (e.target.closest('.delete-video-btn') || e.target.closest('.share-video-btn') || e.target.closest('.card-thumb-btn')) return;

@@ -262,12 +262,17 @@
       </div>
     `;
 
-    card.querySelector('.timestamp-pill').addEventListener('click', () => {
+    // Click anywhere on card to seek (except buttons/edit form)
+    card.addEventListener('click', e => {
+      if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
       if (player) player.seekTo(comment.timestamp);
     });
 
     if (allowComments) {
-      card.querySelector('.comment-resolve-btn').addEventListener('click', () => toggleResolve(comment.id));
+      card.querySelector('.comment-resolve-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        toggleResolve(comment.id);
+      });
     }
 
     if (isMyComment) {
@@ -570,11 +575,16 @@
           ctx.stroke();
         });
       } else if (type === 'text') {
-        ctx.font = 'bold 18px system-ui,sans-serif';
-        ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineWidth = 3;
-        ctx.strokeText(data.text || '', data.x * w, data.y * h);
+        const fontSize = 18;
+        ctx.font = `bold ${fontSize}px 'Times New Roman', Times, serif`;
+        const tx = data.x * w, ty = data.y * h;
+        const txt = data.text || '';
+        const pad = 6;
+        const tw = ctx.measureText(txt).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillRect(tx - pad, ty - fontSize, tw + pad * 2, fontSize + pad * 1.5);
         ctx.fillStyle = color || '#ffffff';
-        ctx.fillText(data.text || '', data.x * w, data.y * h);
+        ctx.fillText(txt, tx, ty);
       }
     }
 
@@ -602,6 +612,7 @@
     const actionBar  = document.getElementById('annot-action-bar');
     const postBtn    = document.getElementById('annot-post-btn');
     const cancelBtn  = document.getElementById('annot-cancel-btn');
+    const undoBtn    = document.getElementById('annot-undo-btn');
     const textBtn    = document.getElementById('annot-text-btn');
     const drawBtn    = document.getElementById('annot-draw-btn');
     if (!drawCanvas || !postBtn) return;
@@ -625,6 +636,27 @@
 
     cancelBtn.addEventListener('click', cancelAnnotation);
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && mode) cancelAnnotation(); });
+
+    // ── Undo ──────────────────────────────────────────────────────────────
+    if (undoBtn) undoBtn.addEventListener('click', () => {
+      if (mode === 'draw') {
+        if (strokes.length === 0) return;
+        strokes.pop();
+        const drawCtx = drawCanvas.getContext('2d');
+        drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+        strokes.forEach(strk => {
+          if (strk.points.length < 2) return;
+          drawCtx.beginPath();
+          drawCtx.strokeStyle = DRAW_COLOR; drawCtx.lineWidth = 3;
+          drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
+          strk.points.forEach((p, i) => i === 0 ? drawCtx.moveTo(p.x, p.y) : drawCtx.lineTo(p.x, p.y));
+          drawCtx.stroke();
+        });
+      } else if (mode === 'text') {
+        const inp = textOverlay.querySelector('.annot-text-input-overlay');
+        if (inp) { inp.value = ''; inp.focus(); }
+      }
+    });
 
     async function postAnnotation() {
       if (!mode) return;

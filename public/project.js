@@ -130,6 +130,12 @@
       </div>
     `;
 
+    // Generate thumbnail from video frame
+    setTimeout(() => {
+      const thumbEl = document.getElementById(`thumb-${video.id}`);
+      if (thumbEl) generateVideoThumbnail(`/api/videos/${video.id}/stream`, thumbEl);
+    }, 0);
+
     // Navigate to video review page
     card.addEventListener('click', e => {
       if (e.target.closest('.card-thumb-btn') || e.target.closest('.btn-icon')) return;
