@@ -21,20 +21,63 @@
   }
   const GUEST_ID = getGuestId();
 
-  // ── Display name — inline, non-blocking ──────────────────────────────────
+  // ── Display name ──────────────────────────────────────────────────────────
   function getDisplayName() {
     return localStorage.getItem('feedo_display_name') || '';
   }
 
+  // ── Name gate (blocking — shown to new visitors before comment form) ──────
+  function showNameGate() {
+    const gate = document.createElement('div');
+    gate.id = 'name-gate';
+    gate.className = 'name-gate';
+    gate.innerHTML = `
+      <p class="name-gate-label">Enter your name to comment</p>
+      <div class="name-gate-row">
+        <input type="text" id="name-gate-input" class="form-input" placeholder="Your name…" autocomplete="off" />
+        <button class="btn btn-primary" id="name-gate-confirm">Continue →</button>
+      </div>
+    `;
+    addCommentArea.parentNode.insertBefore(gate, addCommentArea);
+    addCommentArea.style.display = 'none';
+
+    const input = gate.querySelector('#name-gate-input');
+    const btn   = gate.querySelector('#name-gate-confirm');
+
+    function confirm() {
+      const name = input.value.trim();
+      if (!name) { input.classList.add('input-error'); input.focus(); return; }
+      input.classList.remove('input-error');
+      localStorage.setItem('feedo_display_name', name);
+      gate.remove();
+      showCommentForm();
+    }
+
+    btn.addEventListener('click', confirm);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') confirm(); });
+    setTimeout(() => input.focus(), 100);
+  }
+
+  // ── Activate comment form (after name is known) ───────────────────────────
+  function showCommentForm() {
+    addCommentArea.style.display = 'block';
+    filterRow.style.display = 'flex';
+    const toolbar = document.getElementById('annotation-toolbar');
+    if (toolbar) toolbar.style.display = 'flex';
+    injectNameField(addCommentArea);
+    setupCommentForm();
+    setupCommentFilters();
+  }
+
   function injectNameField(addArea) {
-    if (document.getElementById('share-name-row')) return; // already injected
+    if (document.getElementById('share-name-row')) return;
     const existing = getDisplayName();
     const row = document.createElement('div');
     row.id = 'share-name-row';
     row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
     row.innerHTML = `
       <input type="text" id="share-name-input" class="form-input"
-        placeholder="Your name (optional)…"
+        placeholder="Your name…"
         value="${escapeHtml(existing)}"
         style="flex:1;font-size:12px;padding:5px 9px;" />
     `;
@@ -77,6 +120,16 @@
   let pendingAnnotation = null;
   let commentFilter     = 'all';
 
+  // ── Per-author color assignment (sequential, deterministic by comment order) ─
+  const authorColorMap  = new Map();
+  const shareColorPalette = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
+  function getAuthorColor(author) {
+    if (!authorColorMap.has(author)) {
+      authorColorMap.set(author, shareColorPalette[authorColorMap.size % shareColorPalette.length]);
+    }
+    return authorColorMap.get(author);
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────────
   async function init() {
     initTheme();
@@ -115,13 +168,13 @@
       });
 
       if (allowComments) {
-        addCommentArea.style.display = 'block';
         viewOnlyNote.style.display = 'none';
-        filterRow.style.display = 'flex';
-        document.getElementById('annotation-toolbar').style.display = 'flex';
-        injectNameField(addCommentArea);
-        setupCommentForm();
-        setupCommentFilters();
+        const savedName = getDisplayName();
+        if (savedName) {
+          showCommentForm();
+        } else {
+          showNameGate();
+        }
       } else {
         addCommentArea.style.display = 'none';
         viewOnlyNote.style.display = 'block';
@@ -196,6 +249,9 @@
       return;
     }
 
+    // Seed color map in chronological order so colors are stable across renders
+    comments.forEach(c => getAuthorColor(c.author || 'guest'));
+
     commentsList.innerHTML = '';
     filtered.forEach(c => commentsList.appendChild(buildCommentCard(c)));
     if (player) player.renderMarkers();
@@ -211,7 +267,7 @@
     const isMyComment = allowComments && comment.author === `guest:${GUEST_ID}`;
     const authorRaw = comment.author || 'guest';
     const displayAuthor = authorRaw.startsWith('guest:') ? authorRaw.slice(6) : authorRaw;
-    const pillColor = getUserColor(authorRaw);
+    const pillColor = getAuthorColor(authorRaw);
 
     card.innerHTML = `
       <div class="comment-main-row">

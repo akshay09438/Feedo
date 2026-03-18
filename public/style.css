@@ -1312,6 +1312,29 @@ textarea.form-input { resize: vertical; min-height: 80px; }
 /* ── Comment card seek cursor ────────────────────────────────────────────── */
 .comment-card { cursor: pointer; }
 
+/* ── Name Gate (blocking prompt before comment form) ─────────────────────── */
+.name-gate {
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.name-gate-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.name-gate-row {
+  display: flex;
+  gap: 8px;
+}
+.name-gate-row .form-input {
+  flex: 1;
+}
+.form-input.input-error {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 2px rgba(239,68,68,0.2);
+}
+
 /* ── Name Prompt Area (share page) ───────────────────────────────────────── */
 .name-prompt-area {
   padding: 14px 16px;
