@@ -28,6 +28,9 @@
 
   // ── Name gate (always shown first — comment form hidden until confirmed) ───
   function showNameGate() {
+    // Auto-skip for returning users who already have a name saved
+    if (getDisplayName()) { showCommentForm(); return; }
+
     // Hide everything in the comment area until name is confirmed
     addCommentArea.style.display = 'none';
     filterRow.style.display = 'none';
@@ -334,9 +337,6 @@
               Reply
             </button>
             <div class="reply-form-wrap" id="reply-form-${comment.id}" style="display:none;">
-              <input type="text" class="form-input reply-name-input" placeholder="Your name…"
-                value="${escapeHtml(getDisplayName())}"
-                style="width:100%;margin-bottom:6px;font-size:12px;padding:5px 9px;box-sizing:border-box;" />
               <textarea class="comment-textarea reply-textarea" placeholder="Write a reply…" rows="2" style="min-height:60px;"></textarea>
               <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px;">
                 <button class="btn btn-secondary reply-cancel-btn" style="font-size:12px;padding:4px 10px;">Cancel</button>
@@ -526,12 +526,6 @@
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
           </button>
-          <button class="reply-delete-btn" data-id="${reply.id}" title="Delete">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
-            </svg>
-          </button>
         </div>` : ''}
       </div>
       <div class="reply-text" id="reply-text-${reply.id}">${escapeHtml(reply.text)}</div>
@@ -551,37 +545,30 @@
     });
 
     if (isMyReply) {
+      // Use card.querySelector throughout — card may not be in the document yet
+      const textEl   = card.querySelector(`#reply-text-${reply.id}`);
+      const formEl   = card.querySelector(`#reply-edit-form-${reply.id}`);
+      const inputEl  = card.querySelector(`#reply-edit-input-${reply.id}`);
+      const cancelEl = card.querySelector(`#reply-edit-cancel-${reply.id}`);
+      const saveEl   = card.querySelector(`#reply-edit-save-${reply.id}`);
+
       card.querySelector(`.reply-edit-btn[data-id="${reply.id}"]`).addEventListener('click', e => {
         e.stopPropagation();
-        document.getElementById(`reply-text-${reply.id}`).style.display = 'none';
-        document.getElementById(`reply-edit-form-${reply.id}`).style.display = 'block';
-        const inp = document.getElementById(`reply-edit-input-${reply.id}`);
-        if (inp) { inp.focus(); inp.select(); }
+        textEl.style.display = 'none';
+        formEl.style.display = 'block';
+        if (inputEl) { inputEl.focus(); inputEl.select(); }
       });
-      card.querySelector(`.reply-delete-btn[data-id="${reply.id}"]`).addEventListener('click', async e => {
-        e.stopPropagation();
-        const displayName = getDisplayName();
-        const params = new URLSearchParams({ guest_id: GUEST_ID });
-        if (displayName) params.set('display_name', displayName);
-        try {
-          const res = await fetch(`/api/share/${token}/comments/${reply.id}?${params.toString()}`, { method: 'DELETE' });
-          if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
-          comments = comments.filter(c => c.id !== reply.id);
-          card.remove();
-          showToast('Reply deleted', 'success');
-        } catch(e) { showToast('Network error', 'error'); }
-      });
-      document.getElementById(`reply-edit-cancel-${reply.id}`).addEventListener('click', () => {
-        document.getElementById(`reply-text-${reply.id}`).style.display = '';
-        document.getElementById(`reply-edit-form-${reply.id}`).style.display = 'none';
+
+      cancelEl.addEventListener('click', () => {
+        textEl.style.display = '';
+        formEl.style.display = 'none';
         const r = comments.find(c => c.id === reply.id);
-        const inp = document.getElementById(`reply-edit-input-${reply.id}`);
-        if (r && inp) inp.value = r.text;
+        if (r && inputEl) inputEl.value = r.text;
       });
-      document.getElementById(`reply-edit-save-${reply.id}`).addEventListener('click', async () => {
-        const inp = document.getElementById(`reply-edit-input-${reply.id}`);
-        if (!inp) return;
-        const text = inp.value.trim();
+
+      saveEl.addEventListener('click', async () => {
+        if (!inputEl) return;
+        const text = inputEl.value.trim();
         if (!text) { showToast('Reply cannot be empty', 'error'); return; }
         try {
           const displayName = getDisplayName();
@@ -593,15 +580,16 @@
           const updated = await res.json();
           const idx = comments.findIndex(c => c.id === reply.id);
           if (idx !== -1) comments[idx] = { ...comments[idx], text: updated.text };
-          document.getElementById(`reply-text-${reply.id}`).textContent = updated.text;
-          document.getElementById(`reply-text-${reply.id}`).style.display = '';
-          document.getElementById(`reply-edit-form-${reply.id}`).style.display = 'none';
+          textEl.textContent = updated.text;
+          textEl.style.display = '';
+          formEl.style.display = 'none';
           showToast('Reply updated', 'success');
         } catch(e) { showToast('Network error', 'error'); }
       });
-      document.getElementById(`reply-edit-input-${reply.id}`).addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById(`reply-edit-save-${reply.id}`).click(); }
-        if (e.key === 'Escape') document.getElementById(`reply-edit-cancel-${reply.id}`).click();
+
+      inputEl.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEl.click(); }
+        if (e.key === 'Escape') cancelEl.click();
       });
     }
 
@@ -613,15 +601,12 @@
     const replyFormWrap = commentCard.querySelector(`#reply-form-${parentId}`);
     if (!replyFormWrap) return;
     const textarea  = replyFormWrap.querySelector('.reply-textarea');
-    const nameInput = replyFormWrap.querySelector('.reply-name-input');
     const submitBtn = replyFormWrap.querySelector('.reply-submit-btn');
 
     const text = textarea.value.trim();
     if (!text) { textarea.focus(); showToast('Please enter a reply', 'error'); return; }
 
-    const typedName = nameInput ? nameInput.value.trim() : '';
-    if (typedName) localStorage.setItem('feedo_display_name', typedName);
-    const displayName = typedName || localStorage.getItem('feedo_display_name') || 'Guest';
+    const displayName = getDisplayName() || 'Guest';
 
     submitBtn.disabled = true;
     submitBtn.textContent = 'Posting…';

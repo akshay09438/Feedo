@@ -847,6 +847,18 @@ app.delete('/api/comments/:id', requireAuth, (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
+  // Delete child replies and their attachments first
+  const childIds = allDb('SELECT id FROM comments WHERE parent_id = ?', [req.params.id]).map(r => r.id);
+  for (const childId of childIds) {
+    const childAtts = allDb('SELECT filename FROM attachments WHERE comment_id = ?', [childId]);
+    for (const att of childAtts) {
+      const attPath = path.join(ATTACHMENTS_DIR, att.filename);
+      if (fs.existsSync(attPath)) fs.unlinkSync(attPath);
+    }
+    runDb('DELETE FROM attachments WHERE comment_id = ?', [childId]);
+  }
+  if (childIds.length > 0) runDb('DELETE FROM comments WHERE parent_id = ?', [req.params.id]);
+
   const attachments = allDb('SELECT filename FROM attachments WHERE comment_id = ?', [req.params.id]);
   for (const att of attachments) {
     const attPath = path.join(ATTACHMENTS_DIR, att.filename);
@@ -990,8 +1002,7 @@ app.put('/api/share/:token/comments/:id', (req, res) => {
 
   // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
   const legacyAuthor = `guest:${guest_id}`;
-  const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
-  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor;
   if (!authorMatch) return res.status(403).json({ error: 'Cannot edit this comment' });
 
   try {
@@ -1011,16 +1022,16 @@ app.delete('/api/share/:token/comments/:id', (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [req.params.id, video.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
-  const { guest_id, display_name } = req.query;
+  const { guest_id } = req.query;
   if (!guest_id) return res.status(403).json({ error: 'No guest identity' });
 
-  // Author may be stored as "guest:<id>" (legacy) or as display_name (current behaviour)
   const legacyAuthor = `guest:${guest_id}`;
-  const namedAuthor  = (display_name && display_name.trim()) ? display_name.trim() : null;
-  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor || (namedAuthor && comment.author === namedAuthor);
+  const authorMatch  = (guest_id && comment.guest_id === guest_id) || comment.author === legacyAuthor;
   if (!authorMatch) return res.status(403).json({ error: 'Cannot delete this comment' });
 
   try {
+    // Cascade-delete any replies (SQLite ALTER TABLE FKs are not enforced)
+    runDb('DELETE FROM comments WHERE parent_id = ?', [req.params.id]);
     runDb('DELETE FROM comments WHERE id = ?', [req.params.id]);
     res.json({ ok: true });
   } catch (e) {
