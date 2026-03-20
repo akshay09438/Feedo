@@ -849,11 +849,27 @@
     }
 
     function renderAtTime(t) {
-      // Use a wider window while paused to survive keyframe-snap on seek;
-      // tight window while playing so annotations only flash at the right frame
-      const window = videoEl.paused ? 0.75 : 1 / 30;
+      let lookupT, windowSize;
+      if (videoEl.paused && player) {
+        const intended = player.getIntendedSeekTime();
+        if (intended !== null) {
+          // Seeked via a comment timestamp — use exact intended time, not the
+          // keyframe-snapped currentTime which can be 1-2s off
+          lookupT = intended;
+          windowSize = 0.08;
+        } else {
+          // Paused manually or just posted annotation — use actual time with
+          // a wider window to handle minor float drift
+          lookupT = t;
+          windowSize = 0.5;
+        }
+      } else {
+        // Playing — tight frame-accurate window
+        lookupT = t;
+        windowSize = 1 / 30;
+      }
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      annotations.filter(a => Math.abs(a.timestamp - t) <= window)
+      annotations.filter(a => Math.abs(a.timestamp - lookupT) <= windowSize)
         .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
     }
 

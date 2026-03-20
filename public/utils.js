@@ -549,8 +549,14 @@ function createVideoPlayer(videoEl, opts = {}) {
     }
   });
 
+  // Track the exact time requested by seekTo separately from videoEl.currentTime,
+  // which may be keyframe-snapped by the codec and differ by 1-2+ seconds.
+  let _intendedSeekTime = null;
+  videoEl.addEventListener('play', () => { _intendedSeekTime = null; });
+
   return {
-    seekTo(t) { videoEl.pause(); videoEl.currentTime = t; },
+    seekTo(t) { _intendedSeekTime = t; videoEl.pause(); videoEl.currentTime = t; },
+    getIntendedSeekTime() { return _intendedSeekTime; },
     getCurrentTime() { return videoEl.currentTime; },
     pause() { videoEl.pause(); },
     play() { videoEl.play().catch(() => {}); },
