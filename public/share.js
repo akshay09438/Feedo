@@ -876,10 +876,11 @@
 
     // Drawing tools only if allowComments
     if (!allowComments) return;
-    setupDrawingTools(sizeCanvases, drawAnnotOnCtx);
+    function forceAnnotRedraw() { _lastAnnotTime = -1; }
+    setupDrawingTools(sizeCanvases, drawAnnotOnCtx, forceAnnotRedraw);
   }
 
-  function setupDrawingTools(sizeCanvases, drawAnnotOnCtx) {
+  function setupDrawingTools(sizeCanvases, drawAnnotOnCtx, forceAnnotRedraw) {
     const drawCanvas = document.getElementById('draw-canvas');
     const textOverlay = document.getElementById('text-overlay');
     const actionBar  = document.getElementById('annot-action-bar');
@@ -963,6 +964,7 @@
         if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
         const { annotation } = await res.json();
         annotations.push(annotation);
+        forceAnnotRedraw(); // drawCanvas is about to be hidden — force annot-canvas to render immediately
 
         pendingAnnotation = { type: mode, data };
         capturedTimestamp = ts;
