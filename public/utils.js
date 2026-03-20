@@ -550,7 +550,7 @@ function createVideoPlayer(videoEl, opts = {}) {
   });
 
   return {
-    seekTo(t) { videoEl.currentTime = t; },
+    seekTo(t) { videoEl.pause(); videoEl.currentTime = t; },
     getCurrentTime() { return videoEl.currentTime; },
     pause() { videoEl.pause(); },
     play() { videoEl.play().catch(() => {}); },

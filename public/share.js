@@ -796,7 +796,7 @@
     const annotCanvas = document.getElementById('annot-canvas');
     if (!annotCanvas) return;
     const annotCtx = annotCanvas.getContext('2d');
-    const WINDOW = 1 / 30;
+    // WINDOW is now adaptive — see renderAtTime below
 
     async function loadAnnotations() {
       try {
@@ -814,7 +814,8 @@
         if (!el) continue;
         el.style.left = '0px'; el.style.top = '0px';
         el.style.width = w + 'px'; el.style.height = h + 'px';
-        if (el.tagName === 'CANVAS') { el.width = w; el.height = h; }
+        // Setting canvas.width clears the canvas — force rAF to redraw on next tick
+        if (el.tagName === 'CANVAS') { el.width = w; el.height = h; _lastAnnotTime = -1; }
       }
     }
 
@@ -848,13 +849,17 @@
     }
 
     function renderAtTime(t) {
+      // Use a wider window while paused to survive keyframe-snap on seek;
+      // tight window while playing so annotations only flash at the right frame
+      const window = videoEl.paused ? 0.75 : 1 / 30;
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      annotations.filter(a => Math.abs(a.timestamp - t) <= WINDOW)
+      annotations.filter(a => Math.abs(a.timestamp - t) <= window)
         .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
     }
 
     // Only redraw when currentTime actually changes — avoids 60fps canvas
-    // clear+draw while paused (which was killing video decode performance)
+    // clear+draw while paused (which was killing video decode performance).
+    // _lastAnnotTime is declared here so sizeCanvases can reset it after clearing the canvas.
     let _lastAnnotTime = -1;
     (function rafLoop() {
       if (!document.hidden) {
