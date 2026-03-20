@@ -805,23 +805,7 @@
       } catch(e) { /* non-critical */ }
     }
 
-    function sizeCanvases() {
-      const wrapper = videoEl.parentElement;
-      const w = wrapper.clientWidth  || 640;
-      const h = wrapper.clientHeight || 360;
-      for (const id of ['annot-canvas','draw-canvas','text-overlay']) {
-        const el = document.getElementById(id);
-        if (!el) continue;
-        el.style.left = '0px'; el.style.top = '0px';
-        el.style.width = w + 'px'; el.style.height = h + 'px';
-        // Setting canvas.width clears the canvas — force rAF to redraw on next tick
-        if (el.tagName === 'CANVAS') { el.width = w; el.height = h; _lastAnnotTime = -1; }
-      }
-    }
-
-    ['loadedmetadata','loadeddata','canplay'].forEach(ev => videoEl.addEventListener(ev, sizeCanvases));
-    window.addEventListener('resize', sizeCanvases);
-    setTimeout(sizeCanvases, 200); setTimeout(sizeCanvases, 800);
+    // ── Render helpers ────────────────────────────────────────────────────────
 
     function drawAnnotOnCtx(ctx, type, data, color) {
       const w = annotCanvas.width, h = annotCanvas.height;
@@ -848,51 +832,99 @@
       }
     }
 
-    function renderAtTime(t) {
-      let lookupT, windowSize;
-      if (videoEl.paused && player) {
-        const intended = player.getIntendedSeekTime();
-        if (intended !== null) {
-          // Seeked via a comment timestamp — use exact intended time, not the
-          // keyframe-snapped currentTime which can be 1-2s off
-          lookupT = intended;
-          windowSize = 0.08;
-        } else {
-          // Paused manually or just posted annotation — use actual time with
-          // a wider window to handle minor float drift
-          lookupT = t;
-          windowSize = 0.5;
-        }
-      } else {
-        // Playing — tight frame-accurate window
-        lookupT = t;
-        windowSize = 1 / 30;
-      }
+    // Render annotations at a specific time onto annot-canvas.
+    // exactT: use a tight 80ms window (seeked to exact timestamp).
+    // Otherwise use 500ms for manual pauses.
+    function renderPaused(t, exact) {
+      const win = exact ? 0.08 : 0.5;
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      annotations.filter(a => Math.abs(a.timestamp - lookupT) <= windowSize)
+      annotations.filter(a => Math.abs(a.timestamp - t) <= win)
         .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
     }
 
-    // Only redraw when currentTime actually changes — avoids 60fps canvas
-    // clear+draw while paused (which was killing video decode performance).
-    // _lastAnnotTime is declared here so sizeCanvases can reset it after clearing the canvas.
-    let _lastAnnotTime = -1;
-    (function rafLoop() {
-      if (!document.hidden) {
-        const t = videoEl.currentTime;
-        if (t !== _lastAnnotTime) {
-          _lastAnnotTime = t;
-          renderAtTime(t);
-        }
+    // ── Canvas sizing ─────────────────────────────────────────────────────────
+    // Tracks what was last rendered so sizeCanvases can restore it after clear
+    let _pausedRenderT = null;
+    let _pausedRenderExact = false;
+
+    function sizeCanvases() {
+      const wrapper = videoEl.parentElement;
+      const w = wrapper.clientWidth  || 640;
+      const h = wrapper.clientHeight || 360;
+      for (const id of ['annot-canvas','draw-canvas','text-overlay']) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.style.left = '0px'; el.style.top = '0px';
+        el.style.width = w + 'px'; el.style.height = h + 'px';
+        if (el.tagName === 'CANVAS') { el.width = w; el.height = h; }
       }
-      requestAnimationFrame(rafLoop);
-    })();
+      // Canvas cleared by resize — restore paused annotation if applicable
+      if (videoEl.paused && _pausedRenderT !== null) {
+        renderPaused(_pausedRenderT, _pausedRenderExact);
+      }
+    }
+
+    ['loadedmetadata','loadeddata','canplay'].forEach(ev => videoEl.addEventListener(ev, sizeCanvases));
+    window.addEventListener('resize', sizeCanvases);
+    setTimeout(sizeCanvases, 200); setTimeout(sizeCanvases, 800);
+
+    // ── Paused-state rendering ─────────────────────────────────────────────────
+    // Annotations are rendered directly on pause/seek events and stay on screen.
+    // No rAF while paused — eliminates flicker and CPU overhead.
+
+    function showPaused(t, exact) {
+      _pausedRenderT = t;
+      _pausedRenderExact = !!exact;
+      renderPaused(t, exact);
+    }
+
+    videoEl.addEventListener('pause', () => {
+      const intended = player ? player.getIntendedSeekTime() : null;
+      if (intended !== null) {
+        showPaused(intended, true);   // seeked to exact timestamp
+      } else {
+        showPaused(videoEl.currentTime, false);  // manual pause
+      }
+    });
+
+    videoEl.addEventListener('seeked', () => {
+      if (videoEl.paused) {
+        const intended = player ? player.getIntendedSeekTime() : null;
+        showPaused(intended !== null ? intended : videoEl.currentTime, intended !== null);
+      }
+    });
+
+    // ── Playing-state rendering (rAF only while video is playing) ─────────────
+    // Tight 1/30s window so annotations flash at the exact frame during playback.
+    let _playRafId = null;
+
+    function startPlayLoop() {
+      cancelAnimationFrame(_playRafId);
+      _pausedRenderT = null;
+      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
+      let _lastT = -1;
+      function loop() {
+        if (videoEl.paused) { _playRafId = null; return; }
+        const t = videoEl.currentTime;
+        if (t !== _lastT) {
+          _lastT = t;
+          annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
+          annotations.filter(a => Math.abs(a.timestamp - t) <= 1/30)
+            .forEach(a => drawAnnotOnCtx(annotCtx, a.type, a.data, a.color));
+        }
+        _playRafId = requestAnimationFrame(loop);
+      }
+      _playRafId = requestAnimationFrame(loop);
+    }
+
+    videoEl.addEventListener('play', startPlayLoop);
 
     loadAnnotations();
 
     // Drawing tools only if allowComments
     if (!allowComments) return;
-    function forceAnnotRedraw() { _lastAnnotTime = -1; }
+    // forceAnnotRedraw: called after posting an annotation so it appears immediately
+    function forceAnnotRedraw() { showPaused(videoEl.currentTime, false); }
     setupDrawingTools(sizeCanvases, drawAnnotOnCtx, forceAnnotRedraw);
   }
 
