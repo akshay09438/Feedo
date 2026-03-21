@@ -88,6 +88,9 @@
           </div>
         </div>
 
+        <!-- Annotation Comments -->
+        <div id="annotation-comment-list" style="padding:4px 0;"></div>
+
         <!-- History Panel -->
         <div class="history-panel" id="history-panel">
           <div class="history-panel-header" id="history-panel-header">
@@ -175,5 +178,28 @@
 <script src="/utils.js"></script>
 <script src="/sidebar.js"></script>
 <script src="/video.js"></script>
+
+<!-- Annotation system -->
+<script src="/annotation-utils.js"></script>
+<script src="/annotation.js"></script>
+<script src="/annotation-canvas.js"></script>
+<script src="/annotation-toolbar.js"></script>
+<script src="/annotation-composer.js"></script>
+<script src="/annotation-comment.js"></script>
+<script src="/video-annotator.js"></script>
+<script>
+(function () {
+  const parts   = window.location.pathname.split('/');
+  const vIdx    = parts.indexOf('video');
+  const videoId = vIdx !== -1 ? parts[vIdx + 1] : null;
+  if (!videoId) return;
+
+  const videoEl     = document.getElementById('video-el');
+  const commentList = document.getElementById('annotation-comment-list');
+  if (videoEl && commentList) {
+    window._videoAnnotator = new VideoAnnotator(videoEl, commentList, videoId);
+  }
+})();
+</script>
 </body>
 </html>
