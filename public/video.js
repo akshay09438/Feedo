@@ -1314,8 +1314,11 @@
         const { annotation } = await res.json();
         annotations.push(annotation);
 
-        // Force the render loop to redraw immediately (video is paused so
-        // currentTime hasn't changed — without this the cache skips the render)
+        // Clear any stale intended-seek-time so the render loop uses
+        // videoEl.currentTime (which matches this annotation's timestamp)
+        if (player) player.clearIntendedSeekTime();
+
+        // Force the render loop to redraw immediately
         _lastAnnotTime = -1;
         renderAnnotationsAtTime(ts);
 
@@ -1354,6 +1357,7 @@
     drawBtn.addEventListener('click', () => {
       if (mode === 'draw') { cancelAnnotation(); return; }
       if (!videoEl.paused) videoEl.pause();
+      if (player) player.clearIntendedSeekTime();
       sizeCanvases();
       mode = 'draw'; strokes = [];
       drawBtn.classList.add('active'); textBtn.classList.remove('active');
@@ -1392,6 +1396,7 @@
     textBtn.addEventListener('click', () => {
       if (mode === 'text') { cancelAnnotation(); return; }
       if (!videoEl.paused) videoEl.pause();
+      if (player) player.clearIntendedSeekTime();
       sizeCanvases();
       mode = 'text';
       textBtn.classList.add('active'); drawBtn.classList.remove('active');

@@ -383,6 +383,7 @@ function createVideoPlayer(videoEl, opts = {}) {
   }
 
   function seekToPosition(pos) {
+    _intendedSeekTime = null;
     if (!isNaN(videoEl.duration)) {
       videoEl.currentTime = pos * videoEl.duration;
     }
@@ -540,8 +541,10 @@ function createVideoPlayer(videoEl, opts = {}) {
       e.preventDefault();
       togglePlay();
     } else if (e.key === 'ArrowLeft') {
+      _intendedSeekTime = null;
       videoEl.currentTime = Math.max(0, videoEl.currentTime - 5);
     } else if (e.key === 'ArrowRight') {
+      _intendedSeekTime = null;
       videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + 5);
     } else if (e.key === 'm' || e.key === 'M') {
       videoEl.muted = !videoEl.muted;
@@ -557,6 +560,7 @@ function createVideoPlayer(videoEl, opts = {}) {
   return {
     seekTo(t) { _intendedSeekTime = t; videoEl.pause(); videoEl.currentTime = t; },
     getIntendedSeekTime() { return _intendedSeekTime; },
+    clearIntendedSeekTime() { _intendedSeekTime = null; },
     getCurrentTime() { return videoEl.currentTime; },
     pause() { videoEl.pause(); },
     play() { videoEl.play().catch(() => {}); },
