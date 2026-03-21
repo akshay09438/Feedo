@@ -1223,16 +1223,17 @@
     let _lastAnnotTime = -1;
     let _lastAnnotCount = 0;
 
-    // Force re-render on seek completion (keyframe snap may change currentTime)
-    videoEl.addEventListener('seeked', () => { _lastAnnotTime = -1; });
-
     (function rafLoop() {
       if (!document.hidden && !mode) {
         // Use the exact requested seek time when available (avoids keyframe-snap mismatch)
         const intended = player ? player.getIntendedSeekTime() : null;
         const t = intended !== null ? intended : videoEl.currentTime;
-        // Re-render when time changes OR when annotations array was modified
-        if (t !== _lastAnnotTime || annotations.length !== _lastAnnotCount) {
+        // When paused, always render — guarantees annotations stay visible on screen.
+        // When playing, only re-render when time or annotation count changes (perf).
+        const needsRender = videoEl.paused
+          || t !== _lastAnnotTime
+          || annotations.length !== _lastAnnotCount;
+        if (needsRender) {
           _lastAnnotTime = t;
           _lastAnnotCount = annotations.length;
           renderAnnotationsAtTime(t);
