@@ -1,68 +1,57 @@
-/* annotation-comment.js — renders a single annotation comment list item */
+/* annotation-comment.js — renders an annotation comment styled like a regular comment card */
+
+// Same palette as the main comment system
+const _annotColorPalette = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
+const _annotColorMap = new Map();
+
+function _getAnnotAuthorColor(author) {
+  if (!_annotColorMap.has(author)) {
+    _annotColorMap.set(author, _annotColorPalette[_annotColorMap.size % _annotColorPalette.length]);
+  }
+  return _annotColorMap.get(author);
+}
 
 function createCommentItem(annotation, onClick) {
-  const item = document.createElement('div');
-  Object.assign(item.style, {
-    display:      'flex',
-    gap:          '12px',
-    padding:      '12px',
-    borderRadius: '8px',
-    cursor:       'pointer',
-    transition:   'background 0.15s',
-  });
+  const author = annotation.authorId || 'user';
+  const pillColor = _getAnnotAuthorColor(author);
+  const displayAuthor = author === 'user'
+    ? (localStorage.getItem('feedo_display_name') || 'You')
+    : author;
 
-  item.addEventListener('mouseenter', () => { item.style.background = '#f9fafb'; });
-  item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+  const card = document.createElement('div');
+  card.className = 'comment-card';
+  card.style.cursor = 'pointer';
 
-  // Thumbnail
-  const img = document.createElement('img');
-  img.src = annotation.thumbnailDataUrl;
-  Object.assign(img.style, {
-    width:       '80px',
-    height:      '52px',
-    borderRadius:'6px',
-    objectFit:   'cover',
-    flexShrink:  '0',
-    background:  '#f3f4f6',
-  });
+  card.innerHTML = `
+    <div class="comment-main-row">
+      <div class="comment-body" style="width:100%;">
+        <div class="comment-header">
+          <span class="timestamp-pill" style="background:${pillColor}22; border-color:${pillColor}44; color:${pillColor};">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+            ${formatTimestamp(annotation.timestamp)}
+          </span>
+          <span class="comment-author-label">${escapeHtml(displayAuthor)}</span>
+          <span style="font-size:11px; color:var(--text-secondary); margin-left:auto; padding-right:4px;">🎨 Drawing</span>
+        </div>
 
-  // Right column: timestamp + comment text
-  const right = document.createElement('div');
-  Object.assign(right.style, {
-    display:       'flex',
-    flexDirection: 'column',
-    gap:           '4px',
-    minWidth:      '0',
-  });
+        ${annotation.thumbnailDataUrl ? `
+          <div style="margin:6px 0;">
+            <img src="${annotation.thumbnailDataUrl}"
+              style="width:100%; max-height:90px; object-fit:cover; border-radius:6px; display:block; border:1px solid var(--border);"
+              alt="annotation preview" />
+          </div>
+        ` : ''}
 
-  const ts = document.createElement('span');
-  ts.textContent = formatTimestamp(annotation.timestamp);
-  Object.assign(ts.style, {
-    fontWeight: '700',
-    fontSize:   '12px',
-    color:      '#FF3B30',
-  });
+        <div class="comment-text">${escapeHtml(annotation.commentText)}</div>
+        <div class="comment-date">just now</div>
+      </div>
+    </div>
+  `;
 
-  const text = document.createElement('p');
-  text.textContent = annotation.commentText;
-  Object.assign(text.style, {
-    margin:     '0',
-    color:      '#374151',
-    fontSize:   '13px',
-    lineHeight: '1.4',
-    overflow:   'hidden',
-    display:    '-webkit-box',
-    webkitLineClamp: '2',
-    webkitBoxOrient:'vertical',
-  });
+  card.addEventListener('click', () => onClick(annotation));
 
-  right.appendChild(ts);
-  right.appendChild(text);
-
-  item.appendChild(img);
-  item.appendChild(right);
-
-  item.addEventListener('click', () => onClick(annotation));
-
-  return item;
+  return card;
 }

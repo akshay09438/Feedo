@@ -102,6 +102,7 @@ class VideoAnnotator {
   }
 
   _onCommentSubmit(commentText) {
+    const author = localStorage.getItem('feedo_display_name') || 'user';
     const ann = createAnnotation(
       generateId(),
       this.videoId,
@@ -110,7 +111,7 @@ class VideoAnnotator {
       [...this.canvas.textBoxes],
       this.canvas.getSnapshot(),
       commentText,
-      'user'
+      author
     );
 
     this.annotations.push(ann);
