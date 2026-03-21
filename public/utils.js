@@ -282,7 +282,7 @@ function getProjectGradient(name) {
  * Build a custom video player controller
  */
 function createVideoPlayer(videoEl, opts = {}) {
-  const { commentsGetter, onTimeUpdate, onPause } = opts;
+  const { commentsGetter, onTimeUpdate, onPause, onManualSeek } = opts;
 
   const container = videoEl.closest('.video-side') || videoEl.parentElement;
   const progressTrack = container.querySelector('.progress-track');
@@ -384,6 +384,7 @@ function createVideoPlayer(videoEl, opts = {}) {
 
   function seekToPosition(pos) {
     _intendedSeekTime = null;
+    if (onManualSeek) onManualSeek();
     if (!isNaN(videoEl.duration)) {
       videoEl.currentTime = pos * videoEl.duration;
     }
@@ -542,9 +543,11 @@ function createVideoPlayer(videoEl, opts = {}) {
       togglePlay();
     } else if (e.key === 'ArrowLeft') {
       _intendedSeekTime = null;
+      if (onManualSeek) onManualSeek();
       videoEl.currentTime = Math.max(0, videoEl.currentTime - 5);
     } else if (e.key === 'ArrowRight') {
       _intendedSeekTime = null;
+      if (onManualSeek) onManualSeek();
       videoEl.currentTime = Math.min(videoEl.duration || 0, videoEl.currentTime + 5);
     } else if (e.key === 'm' || e.key === 'M') {
       videoEl.muted = !videoEl.muted;

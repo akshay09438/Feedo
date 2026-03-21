@@ -114,6 +114,10 @@
       onPause: () => {
         // Auto-focus comment box on pause
         setTimeout(() => { if (videoEl.paused) commentText.focus(); }, 50);
+      },
+      onManualSeek: () => {
+        // User scrubbed or used arrow keys — release the pinned annotation time
+        pinnedAnnotTime = null;
       }
     });
 
@@ -1230,10 +1234,6 @@
 
     (function rafLoop() {
       if (!document.hidden && !mode) {
-        // If user scrubbed far from the pinned time, release the pin
-        if (pinnedAnnotTime !== null && Math.abs(videoEl.currentTime - pinnedAnnotTime) > 2.0) {
-          pinnedAnnotTime = null;
-        }
         // Use pinned time (exact annotation timestamp), fall back to currentTime
         const t = pinnedAnnotTime !== null ? pinnedAnnotTime : videoEl.currentTime;
         // When paused, always render — guarantees annotations stay visible on screen.
