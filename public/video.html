@@ -42,22 +42,7 @@
       <div class="video-side">
         <div class="video-wrapper">
           <video id="video-el" preload="auto" playsinline></video>
-          <canvas id="annot-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
-          <canvas id="draw-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;touch-action:none;"></canvas>
-          <div id="text-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;display:none;cursor:crosshair;z-index:20;"></div>
-          <div id="annot-action-bar" class="annot-action-bar" style="display:none;">
-            <button class="annot-post-btn" id="annot-post-btn">✓ Post</button>
-            <button class="annot-undo-btn" id="annot-undo-btn">↩ Undo</button>
-            <button class="annot-cancel-btn-bar" id="annot-cancel-btn">✕ Cancel</button>
-          </div>
-          <div class="annotation-toolbar" id="annotation-toolbar">
-            <button class="annot-tool-btn" id="annot-text-btn" title="Add text">T</button>
-            <button class="annot-tool-btn" id="annot-draw-btn" title="Draw">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
-              </svg>
-            </button>
-          </div>
+          <!-- annotation canvases and toolbar hidden for now -->
 
         </div>
 
