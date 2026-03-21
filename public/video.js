@@ -38,6 +38,7 @@
   let annotations      = [];
   let pendingAnnotation = null;
   let capturedTimestamp = 0;
+  let pinnedAnnotTime  = null; // exact timestamp for annotation rendering (survives keyframe snaps)
   let selectedFiles    = [];
   let player           = null;
   let commentFilter    = 'all';
@@ -291,9 +292,10 @@
       </div>
     `;
 
-    // Click anywhere on card to seek (except buttons/edit form)
+    // Click anywhere on card to seek and pin annotation time
     card.addEventListener('click', e => {
       if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
+      pinnedAnnotTime = comment.timestamp;
       player.seekTo(comment.timestamp);
     });
 
@@ -1223,11 +1225,17 @@
     let _lastAnnotTime = -1;
     let _lastAnnotCount = 0;
 
+    // Clear pinned time when video plays (user moved on)
+    videoEl.addEventListener('play', () => { pinnedAnnotTime = null; });
+
     (function rafLoop() {
       if (!document.hidden && !mode) {
-        // Use the exact requested seek time when available (avoids keyframe-snap mismatch)
-        const intended = player ? player.getIntendedSeekTime() : null;
-        const t = intended !== null ? intended : videoEl.currentTime;
+        // If user scrubbed far from the pinned time, release the pin
+        if (pinnedAnnotTime !== null && Math.abs(videoEl.currentTime - pinnedAnnotTime) > 2.0) {
+          pinnedAnnotTime = null;
+        }
+        // Use pinned time (exact annotation timestamp), fall back to currentTime
+        const t = pinnedAnnotTime !== null ? pinnedAnnotTime : videoEl.currentTime;
         // When paused, always render — guarantees annotations stay visible on screen.
         // When playing, only re-render when time or annotation count changes (perf).
         const needsRender = videoEl.paused
@@ -1314,9 +1322,8 @@
         const { annotation } = await res.json();
         annotations.push(annotation);
 
-        // Clear any stale intended-seek-time so the render loop uses
-        // videoEl.currentTime (which matches this annotation's timestamp)
-        if (player) player.clearIntendedSeekTime();
+        // Pin annotation render time to this exact timestamp
+        pinnedAnnotTime = ts;
 
         // Force the render loop to redraw immediately
         _lastAnnotTime = -1;
