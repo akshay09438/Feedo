@@ -1167,7 +1167,7 @@
 
     const annotCtx = annotCanvas.getContext('2d');
     const DRAW_COLOR = '#ef4444';
-    const WINDOW = 1 / 30;
+    const WINDOW = 0.25;
     let mode = null;
     let strokes = [], currentStroke = [], drawing = false;
 
@@ -1221,11 +1221,20 @@
     }
 
     let _lastAnnotTime = -1;
+    let _lastAnnotCount = 0;
+
+    // Force re-render on seek completion (keyframe snap may change currentTime)
+    videoEl.addEventListener('seeked', () => { _lastAnnotTime = -1; });
+
     (function rafLoop() {
       if (!document.hidden && !mode) {
-        const t = videoEl.currentTime;
-        if (t !== _lastAnnotTime) {
+        // Use the exact requested seek time when available (avoids keyframe-snap mismatch)
+        const intended = player ? player.getIntendedSeekTime() : null;
+        const t = intended !== null ? intended : videoEl.currentTime;
+        // Re-render when time changes OR when annotations array was modified
+        if (t !== _lastAnnotTime || annotations.length !== _lastAnnotCount) {
           _lastAnnotTime = t;
+          _lastAnnotCount = annotations.length;
           renderAnnotationsAtTime(t);
         }
       }
@@ -1303,6 +1312,11 @@
         if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
         const { annotation } = await res.json();
         annotations.push(annotation);
+
+        // Force the render loop to redraw immediately (video is paused so
+        // currentTime hasn't changed — without this the cache skips the render)
+        _lastAnnotTime = -1;
+        renderAnnotationsAtTime(ts);
 
         // Store pending so comment box submit also saves the visual
         pendingAnnotation = { type: mode, data };
