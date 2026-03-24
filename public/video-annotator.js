@@ -101,29 +101,88 @@ class VideoAnnotator {
     this.composer.show(thumbnail, this.currentTimestamp);
   }
 
-  _onCommentSubmit(commentText) {
-    const author = localStorage.getItem('feedo_display_name') || 'user';
-    const ann = createAnnotation(
-      generateId(),
-      this.videoId,
-      this.currentTimestamp,
-      [...this.canvas.strokes],
-      [...this.canvas.textBoxes],
-      this.canvas.getSnapshot(),
-      commentText,
-      author
-    );
-
-    this.annotations.push(ann);
-    saveAnnotations(this.videoId, this.annotations);
-
-    // Prepend to list
-    const item = createCommentItem(ann, a => this._onCommentClick(a));
-    this.commentListEl.insertBefore(item, this.commentListEl.firstChild);
+  async _onCommentSubmit(commentText) {
+    const author = localStorage.getItem('feedo_display_name') || 'Admin';
+    const strokes    = [...this.canvas.strokes];
+    const textBoxes  = [...this.canvas.textBoxes];
+    const thumbnail  = this.canvas.getSnapshot();
 
     this.composer.hide();
     this.canvas.clearAll();
     this.stage = 'idle';
+
+    // Show annotation immediately (before server responds) so the user
+    // sees their drawing stay on screen. Cleared after 4 s or on play.
+    this.canvas.loadAnnotation({ strokes, textBoxes });
+    this.canvas.setTool(null);
+    if (this._replayTimer) clearTimeout(this._replayTimer);
+    this._replayTimer = setTimeout(() => {
+      this.canvas.clearAll();
+      this._replayTimer = null;
+    }, 4000);
+
+    try {
+      const res = await fetch(`/api/videos/${this.videoId}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          timestamp:    this.currentTimestamp,
+          text:         commentText,
+          display_name: author
+        })
+      });
+
+      if (!res.ok) {
+        console.error('Annotation comment post failed', res.status);
+        return;
+      }
+
+      const newComment = await res.json();
+      newComment.attachments = [];
+
+      // Save the visual drawing data locally, keyed by server comment ID
+      localStorage.setItem('annot_' + newComment.id, JSON.stringify({
+        strokes,
+        textBoxes,
+        thumbnailDataUrl: thumbnail
+      }));
+
+      // Save drawing data to server so share users can see it on canvas.
+      // Strokes/textBox coords are stored as 0-100 percent; server expects 0-1 normalized.
+      if (strokes.length > 0) {
+        const normalizedStrokes = strokes.map(s => ({
+          points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
+        }));
+        await fetch(`/api/videos/${this.videoId}/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timestamp: this.currentTimestamp,
+            type: 'draw',
+            data: { strokes: normalizedStrokes },
+            color: '#FF3B30'
+          })
+        }).catch(() => {});
+      }
+      for (const tb of textBoxes) {
+        await fetch(`/api/videos/${this.videoId}/annotations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            timestamp: this.currentTimestamp,
+            type: 'text',
+            data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
+            color: '#ffffff'
+          })
+        }).catch(() => {});
+      }
+
+      // Push into the existing comment system (edit/delete/reply all work)
+      if (window._feedo) window._feedo.addComment(newComment);
+
+    } catch (e) {
+      console.error('Annotation comment network error', e);
+    }
   }
 
   _cancel() {
@@ -138,12 +197,8 @@ class VideoAnnotator {
   _onCommentClick(annotation) {
     if (this._replayTimer) { clearTimeout(this._replayTimer); this._replayTimer = null; }
 
-    // Suppress the pause event that seekTo+pause will fire
-    this._suppressPause = true;
     this.stage = 'idle';
-
     this.videoEl.currentTime = annotation.timestamp;
-    this.videoEl.pause();
 
     this.toolbar.hide();
     this.composer.hide();

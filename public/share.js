@@ -72,8 +72,6 @@
   function showCommentForm() {
     addCommentArea.style.display = 'block';
     filterRow.style.display = 'flex';
-    const toolbar = document.getElementById('annotation-toolbar');
-    if (toolbar) toolbar.style.display = 'flex';
     injectNameField(addCommentArea);
     setupCommentForm();
     setupCommentFilters();
@@ -352,11 +350,13 @@
       </div>
     `;
 
-    // Click anywhere on card to seek and show annotation
+    // Click anywhere on card to seek and show annotation.
+    // _directRenderAnnot is called first so suppressPause is set before seekTo fires
+    // the pause event (prevents the draw toolbar from flashing open).
     card.addEventListener('click', e => {
       if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
-      if (player) player.seekTo(comment.timestamp);
       if (_directRenderAnnot) _directRenderAnnot(comment.timestamp);
+      if (player) player.seekTo(comment.timestamp);
     });
 
     if (allowComments) {
@@ -546,8 +546,8 @@
 
     card.addEventListener('click', e => {
       if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
-      if (player) player.seekTo(reply.timestamp);
       if (_directRenderAnnot) _directRenderAnnot(reply.timestamp);
+      if (player) player.seekTo(reply.timestamp);
     });
 
     if (isMyReply) {
@@ -814,9 +814,12 @@
       _pinTime = t;
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
       annotations
-        .filter(a => Math.abs(a.timestamp - t) <= 2.0)
+        .filter(a => Math.abs(a.timestamp - t) <= 0.5)
         .forEach(a => drawAnnot(annotCtx, a));
     }
+
+    // Release pin when video plays — loop then tracks currentTime directly.
+    videoEl.addEventListener('play', () => { _pinTime = null; });
 
     // Called from comment/reply card click handlers (module-level var).
     _directRenderAnnot = (t) => { renderPin(t); };
@@ -871,21 +874,16 @@
     }
 
     // ── Always-on render loop ──────────────────────────────────────────────
-    // Runs every animation frame. Lightweight — just a canvas clear + a few draw
-    // calls. Guarantees annotation is always up to date; nothing can leave the
-    // canvas permanently blank.
-    //
-    // Window logic:
-    //   pinned  → exact 100ms match  (comment-card click or just-posted annotation)
-    //   paused  → 2 s match          (covers codec keyframe snapping up to ~2 s)
-    //   playing → 1-frame match      (annotation flashes at its exact frame)
+    // pinned  → show annotations near _pinTime (comment-card click / seek)
+    // paused  → show annotations within 2 s of current time (stays while at timestamp)
+    // playing → show annotations within 1 frame (brief flash at exact timestamp)
     (function loop() {
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
       let t, win;
       if (_pinTime !== null) {
-        t = _pinTime;           win = 2.0;
+        t = _pinTime;            win = 0.5;
       } else if (videoEl.paused) {
-        t = videoEl.currentTime; win = 2.0;
+        t = videoEl.currentTime; win = 0.5;
       } else {
         t = videoEl.currentTime; win = 1 / 30;
       }
@@ -905,236 +903,149 @@
 
     if (!allowComments) return;
 
-    // forceAnnotRedraw: called right after pushing a new annotation into the array.
-    // Pins the display to the current timestamp so the annotation is immediately
-    // visible on annot-canvas once the draw/text overlay is hidden.
-    function forceAnnotRedraw() { renderPin(videoEl.currentTime); }
-
-    // Copies draw-canvas pixels directly onto annot-canvas so the annotation
-    // is visible immediately after Post (before the rAF loop takes over).
-    function copyDrawToAnnot(drawCanvasEl) {
-      if (!drawCanvasEl) return;
-      // Make sure annot-canvas matches draw-canvas dimensions
-      if (annotCanvas.width !== drawCanvasEl.width || annotCanvas.height !== drawCanvasEl.height) {
-        annotCanvas.width  = drawCanvasEl.width;
-        annotCanvas.height = drawCanvasEl.height;
-      }
-      annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      annotCtx.drawImage(drawCanvasEl, 0, 0);
-    }
-
-    setupDrawingTools(sizeAll, drawAnnot, forceAnnotRedraw, copyDrawToAnnot);
+    setupShareAnnotator();
   }
 
-  function setupDrawingTools(sizeAll, drawAnnot, forceAnnotRedraw, copyDrawToAnnot) {
-    const drawCanvas  = document.getElementById('draw-canvas');
-    const textOverlay = document.getElementById('text-overlay');
-    const actionBar   = document.getElementById('annot-action-bar');
-    const postBtn     = document.getElementById('annot-post-btn');
-    const cancelBtn   = document.getElementById('annot-cancel-btn');
-    const undoBtn     = document.getElementById('annot-undo-btn');
-    const textBtn     = document.getElementById('annot-text-btn');
-    const drawBtn     = document.getElementById('annot-draw-btn');
-    if (!drawCanvas || !postBtn) return;
+  function setupShareAnnotator() {
+    const wrapper = videoEl.parentElement; // .video-wrapper
 
-    const DRAW_COLOR = '#ef4444';
-    const drawCtx = drawCanvas.getContext('2d');
-    let mode = null;     // 'draw' | 'text' | null
-    let strokes = [];    // completed draw strokes [{points:[{x,y},...]}]
-    let curStroke = [];  // stroke currently being drawn
-    let drawing = false;
+    // AnnotationCanvas inserts its own canvas after videoEl (z-index 10, above annot-canvas at 9)
+    const annotCanvas = new AnnotationCanvas(videoEl);
+    const toolbar     = new AnnotationToolbar(wrapper);
 
-    // ── Hide the drawing UI (without discarding pending annotation) ────────
-    function hideTools() {
-      mode = null; strokes = []; curStroke = []; drawing = false;
-      drawCanvas.style.display = 'none';
-      drawCanvas.onpointerdown = drawCanvas.onpointermove =
-        drawCanvas.onpointerup = drawCanvas.onpointercancel = null;
-      textOverlay.style.display = 'none';
-      textOverlay.onclick = null;
-      textOverlay.innerHTML = '';
-      actionBar.style.display = 'none';
-      drawBtn.classList.remove('active');
-      textBtn.classList.remove('active');
+    // Composer sits below the video wrapper in the layout
+    const composerWrap = document.createElement('div');
+    composerWrap.style.padding = '0 4px';
+    wrapper.insertAdjacentElement('afterend', composerWrap);
+    const composer = new AnnotationComposer(composerWrap);
+
+    let stage            = 'idle';
+    let currentTimestamp = null;
+    let hasPlayed        = false;
+    let suppressPause    = false;
+
+    function startAnnotating(ts) {
+      stage            = 'annotating';
+      currentTimestamp = ts;
+      annotCanvas.clearAll();
+      annotCanvas.setTool('draw');
+      toolbar.setActiveTool('draw');
+      toolbar.setPostEnabled(false);
+      toolbar.show();
     }
 
-    // ── Cancel (discard annotation + reset comment form) ──────────────────
-    function cancelAnnotation() {
-      hideTools();
-      if (commentText.value === '[Drawing]' || commentText.value.startsWith('[Text] ')) {
-        commentText.value = '';
-        commentAtBadge.style.display = 'none';
-      }
-      pendingAnnotation = null;
+    function cancel() {
+      toolbar.hide();
+      composer.hide();
+      annotCanvas.clearAll();
+      annotCanvas.setTool(null);
+      stage = 'idle';
     }
 
-    cancelBtn.addEventListener('click', cancelAnnotation);
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && mode) cancelAnnotation(); });
+    annotCanvas.onStrokeComplete  = () => toolbar.setPostEnabled(true);
+    annotCanvas.onTextBoxComplete = () => toolbar.setPostEnabled(true);
 
-    // ── Undo ──────────────────────────────────────────────────────────────
-    undoBtn && undoBtn.addEventListener('click', () => {
-      if (mode === 'draw') {
-        if (!strokes.length) return;
-        strokes.pop();
-        drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-        strokes.forEach(s => {
-          if (s.points.length < 2) return;
-          drawCtx.beginPath();
-          drawCtx.strokeStyle = DRAW_COLOR; drawCtx.lineWidth = 3;
-          drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
-          s.points.forEach((p, i) => i === 0 ? drawCtx.moveTo(p.x, p.y) : drawCtx.lineTo(p.x, p.y));
-          drawCtx.stroke();
-        });
-      } else if (mode === 'text') {
-        const inp = textOverlay.querySelector('.annot-text-input-overlay');
-        if (inp) { inp.value = ''; inp.focus(); }
-      }
-    });
+    toolbar.onDraw = () => { annotCanvas.setTool('draw'); toolbar.setActiveTool('draw'); };
+    toolbar.onText = () => { annotCanvas.setTool('text'); toolbar.setActiveTool('text'); };
+    toolbar.onUndo = () => {
+      annotCanvas.undo();
+      toolbar.setPostEnabled(annotCanvas.strokes.length > 0 || annotCanvas.textBoxes.length > 0);
+    };
+    toolbar.onPost = () => {
+      stage = 'composing';
+      toolbar.hide();
+      annotCanvas.setTool(null);
+      composer.show(annotCanvas.getSnapshot(), currentTimestamp);
+    };
+    toolbar.onCancel = () => cancel();
+    composer.onCancel = () => cancel();
 
-    // ── Post annotation to server ─────────────────────────────────────────
-    async function postAnnotation() {
-      if (!mode) return;
-      let data;
-      if (mode === 'draw') {
-        if (!strokes.length) { showToast('Draw something first', 'error'); return; }
-        const w = drawCanvas.width || 1, h = drawCanvas.height || 1;
-        data = { strokes: strokes.map(s => ({ points: s.points.map(p => ({ x: p.x/w, y: p.y/h })) })) };
-      } else {
-        const inp = textOverlay.querySelector('.annot-text-input-overlay');
-        const txt = inp ? inp.value.trim() : '';
-        if (!txt) { showToast('Type something first', 'error'); inp && inp.focus(); return; }
-        const tw = textOverlay.clientWidth || 1, th = textOverlay.clientHeight || 1;
-        data = { text: txt, x: parseFloat(inp.style.left) / tw, y: parseFloat(inp.style.top) / th };
-      }
+    composer.onSubmit = async (commentText) => {
+      const displayName  = getDisplayName() || 'Guest';
+      const strokes      = [...annotCanvas.strokes];
+      const textBoxes    = [...annotCanvas.textBoxes];
+      const thumbnail    = annotCanvas.getSnapshot();
 
-      const ts = videoEl.currentTime;
-      const displayName = getDisplayName() || 'Guest';
+      composer.hide();
+      annotCanvas.clearAll();
+      stage = 'idle';
 
-      postBtn.disabled = true; postBtn.textContent = '…';
+      // Show annotation immediately so user sees it without waiting for server
+      annotCanvas.loadAnnotation({ strokes, textBoxes });
+      annotCanvas.setTool(null);
+      const clearTimer = setTimeout(() => { annotCanvas.clearAll(); }, 4000);
+
       try {
-        const res = await fetch(`/api/share/${token}/annotations`, {
+        // Save drawing data to server
+        if (strokes.length > 0) {
+          const normalized = strokes.map(s => ({
+            points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
+          }));
+          await fetch(`/api/share/${token}/annotations`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timestamp: currentTimestamp, type: 'draw',
+              data: { strokes: normalized }, author: displayName, color: '#FF3B30' })
+          }).then(async r => {
+            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
+          }).catch(() => {});
+        }
+        for (const tb of textBoxes) {
+          await fetch(`/api/share/${token}/annotations`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timestamp: currentTimestamp, type: 'text',
+              data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
+              author: displayName, color: '#ffffff' })
+          }).then(async r => {
+            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
+          }).catch(() => {});
+        }
+
+        // Post comment
+        const res = await fetch(`/api/share/${token}/comments`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timestamp: ts, type: mode, data,
-            author: displayName, color: mode === 'draw' ? DRAW_COLOR : '#ffffff' })
+          body: JSON.stringify({ timestamp: currentTimestamp, text: commentText,
+            guest_id: GUEST_ID, display_name: displayName })
         });
-        if (!res.ok) { const e = await res.json(); showToast(e.error || 'Failed', 'error'); return; }
-        const { annotation } = await res.json();
-        annotations.push(annotation);
+        if (!res.ok) { showToast('Failed to post comment', 'error'); return; }
 
-        // Pin the render loop to this timestamp so annotation is visible
-        // immediately once the draw overlay is hidden below.
-        forceAnnotRedraw();
+        const newComment = await res.json();
+        newComment.attachments = [];
 
-        const savedMode = mode;
-        const savedData = Object.assign({}, data);
-        // Copy draw-canvas pixels to annot-canvas BEFORE hiding, so the
-        // annotation is immediately visible as the draw overlay disappears.
-        if (savedMode === 'draw') copyDrawToAnnot(drawCanvas);
-        hideTools();  // hide draw UI — annotation stays on annot-canvas via rAF loop
+        // Save drawing locally for replay when clicking comment
+        localStorage.setItem('annot_' + newComment.id, JSON.stringify({ strokes, textBoxes, thumbnailDataUrl: thumbnail }));
 
-        pendingAnnotation = { type: savedMode, data: savedData };
-        capturedTimestamp = ts;
-        commentText.value = savedMode === 'text' ? `[Text] ${savedData.text}` : '[Drawing]';
-        commentAtTime.textContent = formatTime(ts);
-        commentAtBadge.style.display = 'inline-flex';
-        commentText.focus();
-        commentText.setSelectionRange(commentText.value.length, commentText.value.length);
-        showToast(savedMode === 'draw' ? 'Drawing saved — add your comment' : 'Text saved — add your comment', 'success');
+        comments.push(newComment);
+        comments.sort((a, b) => a.timestamp - b.timestamp);
+        renderComments();
+        const newCard = document.querySelector(`.comment-card[data-id="${newComment.id}"]`);
+        if (newCard) {
+          newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          newCard.classList.add('active-comment');
+          setTimeout(() => newCard.classList.remove('active-comment'), 1500);
+        }
+
+        showToast('Annotation posted', 'success');
       } catch(e) {
-        showToast('Network error', 'error');
-      } finally {
-        postBtn.disabled = false; postBtn.textContent = '✓ Post';
+        console.error('[Share] composer.onSubmit error:', e);
+        clearTimeout(clearTimer);
+        annotCanvas.clearAll();
+        showToast('Failed to post comment', 'error');
       }
-    }
+    };
 
-    postBtn.addEventListener('click', postAnnotation);
-
-    // ── Draw mode ─────────────────────────────────────────────────────────
-    drawBtn.addEventListener('click', () => {
-      if (mode === 'draw') { cancelAnnotation(); return; }
-      if (!videoEl.paused) videoEl.pause();
-      sizeAll();
-      mode = 'draw'; strokes = []; curStroke = []; drawing = false;
-      drawBtn.classList.add('active'); textBtn.classList.remove('active');
-      textOverlay.style.display = 'none'; textOverlay.innerHTML = '';
-      drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-      drawCanvas.style.display = 'block';
-      actionBar.style.display = 'flex';
-
-      drawCanvas.onpointerdown = e => {
-        drawing = true;
-        curStroke = [{ x: e.offsetX, y: e.offsetY }];
-        drawCtx.beginPath();
-        drawCtx.strokeStyle = DRAW_COLOR; drawCtx.lineWidth = 3;
-        drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
-        drawCtx.moveTo(e.offsetX, e.offsetY);
-        drawCanvas.setPointerCapture(e.pointerId);
-      };
-      drawCanvas.onpointermove = e => {
-        if (!drawing) return;
-        curStroke.push({ x: e.offsetX, y: e.offsetY });
-        drawCtx.lineTo(e.offsetX, e.offsetY); drawCtx.stroke();
-      };
-      drawCanvas.onpointerup = drawCanvas.onpointercancel = () => {
-        if (!drawing) return; drawing = false;
-        if (curStroke.length > 1) strokes.push({ points: [...curStroke] });
-        curStroke = [];
-      };
+    videoEl.addEventListener('play',  () => { hasPlayed = true; cancel(); });
+    videoEl.addEventListener('pause', () => {
+      if (suppressPause) { suppressPause = false; return; }
+      if (!hasPlayed)    return;
+      if (stage === 'idle') startAnnotating(videoEl.currentTime);
     });
 
-    // ── Text mode ─────────────────────────────────────────────────────────
-    textBtn.addEventListener('click', () => {
-      if (mode === 'text') { cancelAnnotation(); return; }
-      if (!videoEl.paused) videoEl.pause();
-      sizeAll();
-      mode = 'text';
-      textBtn.classList.add('active'); drawBtn.classList.remove('active');
-      drawCanvas.style.display = 'none';
-      drawCanvas.onpointerdown = drawCanvas.onpointermove =
-        drawCanvas.onpointerup = drawCanvas.onpointercancel = null;
-      actionBar.style.display = 'flex';
-      textOverlay.innerHTML = '<div style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.75);color:#fff;font-size:12px;padding:5px 14px;border-radius:20px;pointer-events:none;white-space:nowrap;">Click anywhere to place your text</div>';
-      textOverlay.style.display = 'block';
-
-      textOverlay.onclick = e => {
-        if (e.target.closest('.annot-text-input-overlay')) return;
-        const existing = textOverlay.querySelector('.annot-text-input-overlay');
-        if (existing) { existing.focus(); return; }
-        textOverlay.querySelector('div')?.remove();
-
-        const inp = document.createElement('input');
-        inp.type = 'text';
-        inp.className = 'annot-text-input-overlay';
-        inp.placeholder = 'Type here…';
-        inp.style.left = Math.max(0, e.offsetX) + 'px';
-        inp.style.top  = Math.max(20, e.offsetY) + 'px';
-        textOverlay.appendChild(inp);
-        setTimeout(() => inp.focus(), 10);
-
-        // Allow dragging the text input to reposition it
-        let dragPending = false, dragging = false, ox = 0, oy = 0, sx = 0, sy = 0;
-        inp.addEventListener('mousedown', e2 => {
-          dragPending = true; dragging = false;
-          ox = e2.offsetX; oy = e2.offsetY; sx = e2.clientX; sy = e2.clientY;
-          e2.preventDefault();
-        });
-        window.addEventListener('mousemove', e2 => {
-          if (!dragPending) return;
-          if (!dragging && (Math.abs(e2.clientX - sx) > 4 || Math.abs(e2.clientY - sy) > 4))
-            dragging = true;
-          if (!dragging) return;
-          const r = textOverlay.getBoundingClientRect();
-          inp.style.left = Math.max(0, e2.clientX - r.left - ox) + 'px';
-          inp.style.top  = Math.max(0, e2.clientY - r.top  - oy) + 'px';
-        });
-        window.addEventListener('mouseup', () => {
-          if (dragPending) { dragPending = false; if (!dragging) inp.focus(); dragging = false; }
-        });
-        inp.addEventListener('keydown', e2 => {
-          if (e2.key === 'Escape') { e2.stopPropagation(); cancelAnnotation(); }
-        });
-      };
-    });
+    // Suppress the pause that fires when clicking a comment timestamp
+    const origDirectRender = _directRenderAnnot;
+    _directRenderAnnot = (t) => {
+      suppressPause = true;
+      if (origDirectRender) origDirectRender(t);
+    };
   }
 
   // Init

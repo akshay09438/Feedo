@@ -54,6 +54,9 @@ class AnnotationCanvas {
   setTool(tool) {
     this.activeTool = tool;
     this.canvas.style.pointerEvents = tool ? 'auto' : 'none';
+    if (tool === 'draw')      this.canvas.style.cursor = 'crosshair';
+    else if (tool === 'text') this.canvas.style.cursor = 'text';
+    else                      this.canvas.style.cursor = 'default';
   }
 
   // ── event binding ─────────────────────────────────────────────────────────
@@ -148,10 +151,11 @@ class AnnotationCanvas {
       position:   'absolute',
       left:       left + 'px',
       top:        top  + 'px',
-      background: 'transparent',
-      border:     '1px dashed rgba(255,59,48,0.5)',
+      background: 'linear-gradient(135deg, rgba(10,10,10,0.88) 0%, rgba(35,35,35,0.88) 100%)',
+      border:     '1px solid rgba(255,255,255,0.25)',
       outline:    'none',
-      color:      '#FF3B30',
+      color:      '#ffffff',
+      fontWeight: 'bold',
       fontSize:   '16px',
       fontFamily: 'sans-serif',
       lineHeight: '1.4',
@@ -159,7 +163,7 @@ class AnnotationCanvas {
       minHeight:  '32px',
       resize:     'both',
       zIndex:     '30',
-      padding:    '2px 4px',
+      padding:    '4px 8px',
     });
 
     wrapper.appendChild(textarea);
@@ -222,9 +226,19 @@ class AnnotationCanvas {
 
     for (const tb of this.textBoxes) {
       const { x, y } = this._toPixel(tb.x, tb.y);
-      this.ctx.font      = `${tb.fontSize || 16}px sans-serif`;
-      this.ctx.fillStyle = '#FF3B30';
-      this.ctx.fillText(tb.text, x, y + (tb.fontSize || 16));
+      const fontSize = tb.fontSize || 16;
+      this.ctx.font = `bold ${fontSize}px sans-serif`;
+      const pad = 6;
+      const tw  = this.ctx.measureText(tb.text).width;
+      // gradient blackish background
+      const grad = this.ctx.createLinearGradient(x - pad, y - fontSize, x - pad + tw + pad * 2, y + pad);
+      grad.addColorStop(0, 'rgba(10,10,10,0.88)');
+      grad.addColorStop(1, 'rgba(35,35,35,0.88)');
+      this.ctx.fillStyle = grad;
+      this.ctx.fillRect(x - pad, y - fontSize, tw + pad * 2, fontSize + pad * 1.5);
+      // bold white text
+      this.ctx.fillStyle = '#ffffff';
+      this.ctx.fillText(tb.text, x, y);
     }
   }
 

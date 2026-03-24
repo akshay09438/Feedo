@@ -142,6 +142,23 @@
     setupResizeHandle();
     setupAnnotations();
     startCommentPolling();
+
+    // Expose a hook so VideoAnnotator can inject annotation comments
+    window._feedo = {
+      addComment(c) {
+        comments.push(c);
+        comments.sort((a, b) => a.timestamp - b.timestamp);
+        renderComments();
+        if (player) player.renderMarkers();
+        // Scroll to the new card
+        const newCard = document.querySelector(`.comment-card[data-id="${c.id}"]`);
+        if (newCard) {
+          newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          newCard.classList.add('active-comment');
+          setTimeout(() => newCard.classList.remove('active-comment'), 1500);
+        }
+      }
+    };
   }
 
   // ── Load Comments ─────────────────────────────────────────────────────────
@@ -232,6 +249,17 @@
     const displayAuthor = author.startsWith('guest:') ? 'Guest' : author;
     const pillColor = getAuthorColor(author);
 
+    // Check for annotation visual data (canvas drawing)
+    let annotData = null;
+    try { annotData = JSON.parse(localStorage.getItem('annot_' + comment.id)); } catch(e) {}
+    const annotBadge = annotData ? `<span style="font-size:11px; color:var(--text-secondary); margin-left:4px;">🎨 Drawing</span>` : '';
+    const annotThumb = annotData && annotData.thumbnailDataUrl ? `
+      <div style="margin:6px 0;">
+        <img src="${annotData.thumbnailDataUrl}"
+          style="width:100%; max-height:90px; object-fit:cover; border-radius:6px; display:block; border:1px solid var(--border);"
+          alt="annotation preview" />
+      </div>` : '';
+
     card.innerHTML = `
       <div class="comment-main-row">
         <button class="comment-resolve-btn${comment.resolved ? ' resolved' : ''}" data-id="${comment.id}" title="${comment.resolved ? 'Mark as open' : 'Mark as resolved'}">
@@ -249,6 +277,7 @@
               ${formatTime(comment.timestamp)}
             </span>
             <span class="comment-author-label">${escapeHtml(displayAuthor)}</span>
+            ${annotBadge}
             <div class="comment-actions" data-id="${comment.id}">
               ${isAdmin ? `
               <button class="comment-edit-btn" data-id="${comment.id}" title="Edit comment">
@@ -266,6 +295,7 @@
               ` : ''}
             </div>
           </div>
+          ${annotThumb}
           <div class="comment-text" id="comment-text-${comment.id}">${escapeHtml(comment.text)}</div>
           <div class="comment-edit-form" id="comment-edit-form-${comment.id}" style="display:none;">
             <textarea class="comment-edit-textarea" id="comment-edit-input-${comment.id}">${escapeHtml(comment.text)}</textarea>
@@ -300,7 +330,21 @@
     card.addEventListener('click', e => {
       if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
       pinnedAnnotTime = comment.timestamp;
+      // Suppress the pause event that seekTo fires so _startAnnotating doesn't
+      // flash the draw toolbar or clear the canvas before _onCommentClick loads.
+      if (annotData && window._videoAnnotator) {
+        window._videoAnnotator._suppressPause = true;
+      }
       player.seekTo(comment.timestamp);
+      // If this comment has annotation drawing data, replay it on the canvas
+      if (annotData && window._videoAnnotator) {
+        window._videoAnnotator._onCommentClick({
+          timestamp: comment.timestamp,
+          strokes: annotData.strokes || [],
+          textBoxes: annotData.textBoxes || [],
+          thumbnailDataUrl: annotData.thumbnailDataUrl
+        });
+      }
     });
 
     // Resolve checkbox
@@ -551,6 +595,7 @@
         return;
       }
       comments = comments.filter(c => c.id !== id && c.parent_id !== id);
+      localStorage.removeItem('annot_' + id);
       renderComments();
       if (player) player.renderMarkers();
       showToast('Comment deleted', 'success');
