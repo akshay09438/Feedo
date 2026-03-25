@@ -44,12 +44,14 @@
   let commentFilter    = 'all';
   let historyOpen      = false;
 
-  // ── Per-author sequential color assignment ────────────────────────────────
+  // ── Per-author color assignment (hash-based — deterministic per name) ───────
   const authorColorMap   = new Map();
   const colorPalette     = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
   function getAuthorColor(author) {
     if (!authorColorMap.has(author)) {
-      authorColorMap.set(author, colorPalette[authorColorMap.size % colorPalette.length]);
+      let h = 0;
+      for (let i = 0; i < author.length; i++) h = (h * 31 + author.charCodeAt(i)) >>> 0;
+      authorColorMap.set(author, colorPalette[h % colorPalette.length]);
     }
     return authorColorMap.get(author);
   }
@@ -486,7 +488,7 @@
       const res = await fetch(`/api/videos/${videoId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, parent_id: parentId })
+        body: JSON.stringify({ text, parent_id: parentId, display_name: localStorage.getItem('feedo_display_name') || 'Admin' })
       });
       if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
       const newReply = await res.json();

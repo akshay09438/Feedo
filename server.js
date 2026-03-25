@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const compression = require('compression');
 const session = require('express-session');
 const multer = require('multer');
 const initSqlJs = require('sql.js');
@@ -232,6 +233,7 @@ const uploadAttachments = multer({
 });
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
@@ -242,7 +244,9 @@ app.use(session({
 }));
 app.use(express.static(path.join(ROOT, 'public'), {
   index: false,
-  extensions: []
+  extensions: [],
+  maxAge: '1h',   // cache JS/CSS/HTML in browser for 1 hour
+  etag: true
 }));
 
 // ── Auth middleware ───────────────────────────────────────────────────────────
@@ -426,7 +430,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
                  v.created_at, COUNT(c.id) AS comment_count, NULL AS project_name
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
-          WHERE v.project_id IS NULL
+          WHERE v.project_id IS NULL AND v.version_number = 1
           GROUP BY v.id
           ORDER BY v.created_at DESC
         `;
@@ -439,7 +443,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
           FROM videos v
           LEFT JOIN comments c ON c.video_id = v.id
           LEFT JOIN projects p ON p.id = v.project_id
-          WHERE v.project_id = ?
+          WHERE v.project_id = ? AND v.version_number = 1
           GROUP BY v.id
           ORDER BY v.created_at DESC
         `;
@@ -453,6 +457,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
         FROM videos v
         LEFT JOIN comments c ON c.video_id = v.id
         LEFT JOIN projects p ON p.id = v.project_id
+        WHERE v.version_number = 1
         GROUP BY v.id
         ORDER BY v.created_at DESC
       `;

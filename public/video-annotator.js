@@ -109,17 +109,14 @@ class VideoAnnotator {
 
     this.composer.hide();
     this.canvas.clearAll();
-    this.stage = 'idle';
 
-    // Show annotation immediately (before server responds) so the user
-    // sees their drawing stay on screen. Cleared after 4 s or on play.
+    // Show annotation immediately (before server responds).
+    // Use 'replaying' stage so a stray pause event doesn't call _startAnnotating
+    // and wipe the canvas before the user sees their drawing.
     this.canvas.loadAnnotation({ strokes, textBoxes });
     this.canvas.setTool(null);
-    if (this._replayTimer) clearTimeout(this._replayTimer);
-    this._replayTimer = setTimeout(() => {
-      this.canvas.clearAll();
-      this._replayTimer = null;
-    }, 4000);
+    this.stage = 'replaying'; // annotation persists until video plays (_cancel clears it)
+    if (this._replayTimer) { clearTimeout(this._replayTimer); this._replayTimer = null; }
 
     try {
       const res = await fetch(`/api/videos/${this.videoId}/comments`, {
@@ -197,18 +194,15 @@ class VideoAnnotator {
   _onCommentClick(annotation) {
     if (this._replayTimer) { clearTimeout(this._replayTimer); this._replayTimer = null; }
 
-    this.stage = 'idle';
+    // Suppress any pause event the currentTime seek might fire so _startAnnotating
+    // doesn't clear the canvas before (or after) loadAnnotation runs.
+    this._suppressPause = true;
+    this.stage = 'replaying'; // annotation persists until video plays (_cancel clears it)
     this.videoEl.currentTime = annotation.timestamp;
 
     this.toolbar.hide();
     this.composer.hide();
     this.canvas.loadAnnotation(annotation);
     this.canvas.setTool(null); // display-only
-
-    // Clear overlay after 4 s (or immediately on play via _cancel)
-    this._replayTimer = setTimeout(() => {
-      this.canvas.clearAll();
-      this._replayTimer = null;
-    }, 4000);
   }
 }

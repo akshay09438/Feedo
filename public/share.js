@@ -28,10 +28,7 @@
 
   // ── Name gate (always shown first — comment form hidden until confirmed) ───
   function showNameGate() {
-    // Auto-skip for returning users who already have a name saved
-    if (getDisplayName()) { showCommentForm(); return; }
-
-    // Hide everything in the comment area until name is confirmed
+    // Always show the gate — addCommentArea is already hidden in HTML by default
     addCommentArea.style.display = 'none';
     filterRow.style.display = 'none';
 
@@ -72,7 +69,6 @@
   function showCommentForm() {
     addCommentArea.style.display = 'block';
     filterRow.style.display = 'flex';
-    injectNameField(addCommentArea);
     setupCommentForm();
     setupCommentFilters();
   }
@@ -132,12 +128,14 @@
   // to force annotation display independent of video events.
   let _directRenderAnnot = null;
 
-  // ── Per-author color assignment (sequential, deterministic by comment order) ─
+  // ── Per-author color assignment (hash-based — deterministic per name) ───────
   const authorColorMap  = new Map();
   const shareColorPalette = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
   function getAuthorColor(author) {
     if (!authorColorMap.has(author)) {
-      authorColorMap.set(author, shareColorPalette[authorColorMap.size % shareColorPalette.length]);
+      let h = 0;
+      for (let i = 0; i < author.length; i++) h = (h * 31 + author.charCodeAt(i)) >>> 0;
+      authorColorMap.set(author, shareColorPalette[h % shareColorPalette.length]);
     }
     return authorColorMap.get(author);
   }
@@ -185,6 +183,9 @@
       } else {
         addCommentArea.style.display = 'none';
         viewOnlyNote.style.display = 'block';
+        // Show filter row so view-only users can filter by All/Open/Resolved
+        filterRow.style.display = 'flex';
+        setupCommentFilters();
       }
 
       if (versions.length > 1) {
@@ -286,12 +287,13 @@
 
     card.innerHTML = `
       <div class="comment-main-row">
-        ${allowComments ? `
-        <button class="comment-resolve-btn${comment.resolved ? ' resolved' : ''}" data-id="${comment.id}" title="${comment.resolved ? 'Mark as open' : 'Mark as resolved'}">
+        <button class="comment-resolve-btn${comment.resolved ? ' resolved' : ''}" data-id="${comment.id}"
+          title="${comment.resolved ? 'Resolved' : 'Open'}"
+          ${!allowComments ? 'style="pointer-events:none;cursor:default;" disabled' : ''}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12"/>
           </svg>
-        </button>` : '<div style="width:22px;flex-shrink:0;"></div>'}
+        </button>
         <div class="comment-body">
           <div class="comment-header">
             <span class="timestamp-pill" data-ts="${comment.timestamp}" style="background:${pillColor}22; border-color:${pillColor}44; color:${pillColor};">
@@ -718,11 +720,7 @@
 
     submitComment.disabled = true;
     submitComment.textContent = 'Posting…';
-    // Read name from inline field, save it, fall back to "Guest"
-    const nameInp = document.getElementById('share-name-input');
-    const typedName = nameInp ? nameInp.value.trim() : '';
-    if (typedName) localStorage.setItem('feedo_display_name', typedName);
-    const displayName = typedName || localStorage.getItem('feedo_display_name') || 'Guest';
+    const displayName = getDisplayName() || 'Guest';
 
     try {
       const res = await fetch(`/api/share/${token}/comments`, {
