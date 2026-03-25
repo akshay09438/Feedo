@@ -196,7 +196,31 @@ async function initDatabase() {
     )
   `);
 
+  // ── Performance indexes ──────────────────────────────────────────────────────
+  db.run('CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_attachments_comment_id ON attachments(comment_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_annotations_video_id ON annotations(video_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_videos_version_group ON videos(version_group_id)');
+
   saveDb();
+}
+
+// ── Helper: bulk-fetch attachments for a list of comments (avoids N+1) ────────
+function getAttachmentsForComments(comments) {
+  if (!comments.length) return {};
+  const ids = comments.map(c => c.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = allDb(
+    `SELECT * FROM attachments WHERE comment_id IN (${placeholders}) ORDER BY created_at ASC`,
+    ids
+  );
+  const byId = {};
+  for (const r of rows) {
+    if (!byId[r.comment_id]) byId[r.comment_id] = [];
+    byId[r.comment_id].push(r);
+  }
+  return byId;
 }
 
 // ── Helper: log history ───────────────────────────────────────────────────────
@@ -613,10 +637,8 @@ app.get('/api/videos/:id/comments', requireAuth, (req, res) => {
     [req.params.id]
   );
 
-  const result = comments.map(c => ({
-    ...c,
-    attachments: allDb('SELECT * FROM attachments WHERE comment_id = ? ORDER BY created_at ASC', [c.id])
-  }));
+  const attachMap = getAttachmentsForComments(comments);
+  const result = comments.map(c => ({ ...c, attachments: attachMap[c.id] || [] }));
 
   res.json(result);
 });
@@ -944,10 +966,8 @@ app.get('/api/share/:token', (req, res) => {
     [video.id]
   );
 
-  const commentsWithAttachments = comments.map(c => ({
-    ...c,
-    attachments: allDb('SELECT * FROM attachments WHERE comment_id = ? ORDER BY created_at ASC', [c.id])
-  }));
+  const attachMap = getAttachmentsForComments(comments);
+  const commentsWithAttachments = comments.map(c => ({ ...c, attachments: attachMap[c.id] || [] }));
 
   // Get versions in same group
   let versions = [];

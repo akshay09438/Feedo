@@ -1169,7 +1169,7 @@
       } catch (e) {
         // silent — don't disrupt the user
       }
-    }, 8000);
+    }, 15000);
   }
 
   // ── Resize Handle ─────────────────────────────────────────────────────────
@@ -1285,8 +1285,7 @@
         const t = pinnedAnnotTime !== null ? pinnedAnnotTime : videoEl.currentTime;
         // When paused, always render — guarantees annotations stay visible on screen.
         // When playing, only re-render when time or annotation count changes (perf).
-        const needsRender = videoEl.paused
-          || t !== _lastAnnotTime
+        const needsRender = t !== _lastAnnotTime
           || annotations.length !== _lastAnnotCount;
         if (needsRender) {
           _lastAnnotTime = t;

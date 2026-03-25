@@ -974,29 +974,31 @@
       const clearTimer = setTimeout(() => { annotCanvas.clearAll(); }, 4000);
 
       try {
-        // Save drawing data to server
+        // Save drawing data to server — all annotation saves fire in parallel
+        const annotSaves = [];
         if (strokes.length > 0) {
           const normalized = strokes.map(s => ({
             points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
           }));
-          await fetch(`/api/share/${token}/annotations`, {
+          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ timestamp: currentTimestamp, type: 'draw',
               data: { strokes: normalized }, author: displayName, color: '#FF3B30' })
           }).then(async r => {
             if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
-          }).catch(() => {});
+          }).catch(() => {}));
         }
         for (const tb of textBoxes) {
-          await fetch(`/api/share/${token}/annotations`, {
+          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ timestamp: currentTimestamp, type: 'text',
               data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
               author: displayName, color: '#ffffff' })
           }).then(async r => {
             if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
-          }).catch(() => {});
+          }).catch(() => {}));
         }
+        await Promise.all(annotSaves);
 
         // Post comment
         const res = await fetch(`/api/share/${token}/comments`, {

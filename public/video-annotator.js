@@ -146,11 +146,13 @@ class VideoAnnotator {
 
       // Save drawing data to server so share users can see it on canvas.
       // Strokes/textBox coords are stored as 0-100 percent; server expects 0-1 normalized.
+      // All annotation saves fire in parallel — no sequential blocking.
+      const annotationSaves = [];
       if (strokes.length > 0) {
         const normalizedStrokes = strokes.map(s => ({
           points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
         }));
-        await fetch(`/api/videos/${this.videoId}/annotations`, {
+        annotationSaves.push(fetch(`/api/videos/${this.videoId}/annotations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -159,10 +161,10 @@ class VideoAnnotator {
             data: { strokes: normalizedStrokes },
             color: '#FF3B30'
           })
-        }).catch(() => {});
+        }).catch(() => {}));
       }
       for (const tb of textBoxes) {
-        await fetch(`/api/videos/${this.videoId}/annotations`, {
+        annotationSaves.push(fetch(`/api/videos/${this.videoId}/annotations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -171,8 +173,9 @@ class VideoAnnotator {
             data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
             color: '#ffffff'
           })
-        }).catch(() => {});
+        }).catch(() => {}));
       }
+      await Promise.all(annotationSaves);
 
       // Push into the existing comment system (edit/delete/reply all work)
       if (window._feedo) window._feedo.addComment(newComment);
