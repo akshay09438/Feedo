@@ -145,7 +145,7 @@
     setupAnnotations();
     startCommentPolling();
 
-    // Expose a hook so VideoAnnotator can inject annotation comments
+    // Expose hooks so VideoAnnotator can inject data into this module's state
     window._feedo = {
       addComment(c) {
         comments.push(c);
@@ -159,6 +159,11 @@
           newCard.classList.add('active-comment');
           setTimeout(() => newCard.classList.remove('active-comment'), 1500);
         }
+      },
+      // Called by VideoAnnotator after saving each annotation to the server so
+      // the playback render loop can show it immediately without a page reload.
+      pushAnnotation(ann) {
+        annotations.push(ann);
       }
     };
   }
@@ -1207,6 +1212,49 @@
     });
   }
 
+  // ── Annotation playback render loop (VideoAnnotator-based) ────────────────
+  // Shows server-side annotations on the canvas during scrubbing/playback so
+  // drawings stay visible at their timestamp forever, not just after a card click.
+  function startAnnotationPlaybackLoop() {
+    let _lastKey = null;
+
+    (function loop() {
+      const va = window._videoAnnotator;
+      if (va) {
+        if (va.stage === 'idle') {
+          const t   = videoEl.currentTime;
+          const WIN = videoEl.paused ? 0.5 : (1 / 30); // wide when paused, tight when playing
+          const near = annotations.filter(a => Math.abs(a.timestamp - t) <= WIN);
+          const key  = near.map(a => a.id).sort().join(',');
+
+          if (key !== _lastKey) {
+            _lastKey = key;
+            if (near.length > 0) {
+              // Merge all draw strokes and text boxes at this timestamp.
+              // Server stores coords as 0-1; AnnotationCanvas expects 0-100.
+              const strokes = near
+                .filter(a => a.type === 'draw')
+                .flatMap(a => (a.data.strokes || []).map(s => ({
+                  points: s.points.map(p => ({ x: p.x * 100, y: p.y * 100 }))
+                })));
+              const textBoxes = near
+                .filter(a => a.type === 'text')
+                .map(a => ({ text: a.data.text, x: a.data.x * 100, y: a.data.y * 100 }));
+              va.canvas.loadAnnotation({ strokes, textBoxes });
+            } else {
+              va.canvas.clearAll();
+            }
+          }
+        } else {
+          // User is drawing / composing / replaying — reset so we re-evaluate
+          // the moment they return to idle (e.g. after pressing play).
+          _lastKey = null;
+        }
+      }
+      requestAnimationFrame(loop);
+    })();
+  }
+
   // ── Annotations ───────────────────────────────────────────────────────────
   function setupAnnotations() {
     const annotCanvas = document.getElementById('annot-canvas');
@@ -1219,7 +1267,13 @@
     const textBtn     = document.getElementById('annot-text-btn');
     const drawBtn     = document.getElementById('annot-draw-btn');
 
-    if (!annotCanvas || !postBtn) return;
+    // When the old annotation canvases are absent (current layout), fall through
+    // to the VideoAnnotator-based playback loop instead of bailing out entirely.
+    if (!annotCanvas) {
+      startAnnotationPlaybackLoop();
+      return;
+    }
+    if (!postBtn) return;
 
     const annotCtx = annotCanvas.getContext('2d');
     const DRAW_COLOR = '#ef4444';

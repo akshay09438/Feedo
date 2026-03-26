@@ -161,6 +161,11 @@ class VideoAnnotator {
             data: { strokes: normalizedStrokes },
             color: '#FF3B30'
           })
+        }).then(async r => {
+          if (r.ok) {
+            const { annotation } = await r.json();
+            if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
+          }
         }).catch(() => {}));
       }
       for (const tb of textBoxes) {
@@ -173,6 +178,11 @@ class VideoAnnotator {
             data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
             color: '#ffffff'
           })
+        }).then(async r => {
+          if (r.ok) {
+            const { annotation } = await r.json();
+            if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
+          }
         }).catch(() => {}));
       }
       await Promise.all(annotationSaves);
