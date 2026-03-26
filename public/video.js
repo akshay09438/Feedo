@@ -334,7 +334,9 @@
       pinnedAnnotTime = comment.timestamp;
       // Suppress the pause event that seekTo fires so _startAnnotating doesn't
       // flash the draw toolbar or clear the canvas before _onCommentClick loads.
-      if (annotData && window._videoAnnotator) {
+      // Always suppress — not just when annotData exists — so clicking any comment
+      // card while the video is playing doesn't open the annotation toolbar.
+      if (window._videoAnnotator) {
         window._videoAnnotator._suppressPause = true;
       }
       player.seekTo(comment.timestamp);
@@ -456,6 +458,7 @@
 
     card.addEventListener('click', e => {
       if (e.target.closest('button')) return;
+      if (window._videoAnnotator) window._videoAnnotator._suppressPause = true;
       player.seekTo(reply.timestamp);
     });
 
