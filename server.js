@@ -261,7 +261,7 @@ app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
-  secret: 'feedo-secret-2026',
+  secret: process.env.SESSION_SECRET || 'feedo-secret-2026',
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }
