@@ -144,15 +144,16 @@ class VideoAnnotator {
         thumbnailDataUrl: thumbnail
       }));
 
-      // Save drawing data to server so share users can see it on canvas.
-      // Strokes/textBox coords are stored as 0-100 percent; server expects 0-1 normalized.
-      // All annotation saves fire in parallel — no sequential blocking.
-      const annotationSaves = [];
+      // Add to comment panel immediately — don't wait for annotation saves
+      if (window._feedo) window._feedo.addComment(newComment);
+
+      // Save drawing data to server in background so share users can see it.
+      // Strokes/textBox coords stored as 0-100 percent; server expects 0-1 normalized.
       if (strokes.length > 0) {
         const normalizedStrokes = strokes.map(s => ({
           points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
         }));
-        annotationSaves.push(fetch(`/api/videos/${this.videoId}/annotations`, {
+        fetch(`/api/videos/${this.videoId}/annotations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -166,10 +167,10 @@ class VideoAnnotator {
             const { annotation } = await r.json();
             if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
           }
-        }).catch(() => {}));
+        }).catch(() => {});
       }
       for (const tb of textBoxes) {
-        annotationSaves.push(fetch(`/api/videos/${this.videoId}/annotations`, {
+        fetch(`/api/videos/${this.videoId}/annotations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -183,12 +184,8 @@ class VideoAnnotator {
             const { annotation } = await r.json();
             if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
           }
-        }).catch(() => {}));
+        }).catch(() => {});
       }
-      await Promise.all(annotationSaves);
-
-      // Push into the existing comment system (edit/delete/reply all work)
-      if (window._feedo) window._feedo.addComment(newComment);
 
     } catch (e) {
       console.error('Annotation comment network error', e);
