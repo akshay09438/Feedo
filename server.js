@@ -349,7 +349,7 @@ app.use(cookieSession({
 app.use(express.static(path.join(ROOT, 'public'), {
   index: false,
   extensions: [],
-  maxAge: '1h',   // cache JS/CSS/HTML in browser for 1 hour
+  maxAge: 0,    // always revalidate via ETag — no stale JS after deploys
   etag: true
 }));
 

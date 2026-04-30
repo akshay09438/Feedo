@@ -130,7 +130,9 @@ class VideoAnnotator {
       });
 
       if (!res.ok) {
-        console.error('Annotation comment post failed', res.status);
+        const errData = await res.json().catch(() => ({}));
+        if (typeof showToast === 'function') showToast(errData.error || 'Failed to post comment (' + res.status + ')', 'error');
+        else console.error('Annotation comment post failed', res.status, errData);
         return;
       }
 
@@ -145,7 +147,13 @@ class VideoAnnotator {
       }));
 
       // Add to comment panel immediately — don't wait for annotation saves
-      if (window._feedo) window._feedo.addComment(newComment);
+      if (window._feedo) {
+        window._feedo.addComment(newComment);
+      } else {
+        // _feedo not ready (rare race) — reload comments from server
+        if (typeof showToast === 'function') showToast('Comment saved!', 'success');
+        setTimeout(() => window.location.reload(), 1200);
+      }
 
       // Save drawing data to server in background so share users can see it.
       // Strokes/textBox coords stored as 0-100 percent; server expects 0-1 normalized.
@@ -189,6 +197,7 @@ class VideoAnnotator {
 
     } catch (e) {
       console.error('Annotation comment network error', e);
+      if (typeof showToast === 'function') showToast('Network error — comment not saved', 'error');
     }
   }
 
