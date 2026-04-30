@@ -8,6 +8,9 @@ const initSqlJs = require('sql.js');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,7 +22,7 @@ const CREDENTIALS = {
 };
 
 // ── Directories ───────────────────────────────────────────────────────────────
-const ROOT = process.env.UPLOADS_DIR ? path.dirname(process.env.UPLOADS_DIR) : __dirname;
+const ROOT = __dirname;
 const UPLOADS_BASE = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
 const VIDEOS_DIR = path.join(UPLOADS_BASE, 'videos');
 const ATTACHMENTS_DIR = path.join(UPLOADS_BASE, 'attachments');
@@ -28,6 +31,35 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
 [VIDEOS_DIR, ATTACHMENTS_DIR].forEach(d => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
+
+// ── S3 / Cloud storage ────────────────────────────────────────────────────────
+const S3_BUCKET = process.env.S3_BUCKET || null;
+const s3 = S3_BUCKET ? new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+}) : null;
+
+async function uploadToS3(buffer, key, mimeType) {
+  await s3.send(new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: key,
+    Body: buffer,
+    ContentType: mimeType
+  }));
+}
+
+async function deleteFromS3(key) {
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+  } catch (e) { /* non-fatal */ }
+}
+
+async function getS3Url(key) {
+  return getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }), { expiresIn: 3600 });
+}
 
 // ── Database (sql.js — pure WASM, no native build required) ──────────────────
 let db;
@@ -196,6 +228,20 @@ async function initDatabase() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      display_name TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Add owner_id to projects and videos for per-user isolation
+  try { db.run(`ALTER TABLE projects ADD COLUMN owner_id INTEGER REFERENCES users(id)`); } catch(e) {}
+  try { db.run(`ALTER TABLE videos ADD COLUMN owner_id INTEGER REFERENCES users(id)`); } catch(e) {}
+
   // ── Performance indexes ──────────────────────────────────────────────────────
   db.run('CREATE INDEX IF NOT EXISTS idx_comments_video_id ON comments(video_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_attachments_comment_id ON attachments(comment_id)');
@@ -236,15 +282,19 @@ function logHistory(videoId, projectId, actor, action, detail) {
 }
 
 // ── Multer ────────────────────────────────────────────────────────────────────
-const videoStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, VIDEOS_DIR),
-  filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname))
-});
+const videoStorage = S3_BUCKET
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: (req, file, cb) => cb(null, VIDEOS_DIR),
+      filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname))
+    });
 
-const attachmentStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, ATTACHMENTS_DIR),
-  filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname))
-});
+const attachmentStorage = S3_BUCKET
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: (req, file, cb) => cb(null, ATTACHMENTS_DIR),
+      filename: (req, file, cb) => cb(null, uuidv4() + path.extname(file.originalname))
+    });
 
 const uploadVideo = multer({
   storage: videoStorage,
@@ -318,11 +368,51 @@ function streamFile(req, res, filePath, mimeType) {
 // ── Auth routes ───────────────────────────────────────────────────────────────
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'username and password required' });
+
+  // 1. Try hardcoded admin credentials (backward compat)
   if (username === CREDENTIALS.username && password === CREDENTIALS.password) {
     req.session.authenticated = true;
-    res.json({ ok: true });
-  } else {
-    res.status(401).json({ error: 'Incorrect username or password' });
+    return res.json({ ok: true });
+  }
+
+  // 2. Try users table (email lookup)
+  const user = getDb('SELECT * FROM users WHERE email = ?', [username.toLowerCase().trim()]);
+  if (user && bcrypt.compareSync(password, user.password_hash)) {
+    req.session.authenticated = true;
+    req.session.userId = user.id;
+    req.session.displayName = user.display_name || null;
+    return res.json({ ok: true });
+  }
+
+  res.status(401).json({ error: 'Incorrect email or password' });
+});
+
+app.post('/api/auth/signup', (req, res) => {
+  const { email, password, display_name } = req.body;
+  if (!email || !email.trim()) return res.status(400).json({ error: 'Email is required' });
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+  const normalizedEmail = email.toLowerCase().trim();
+  const existing = getDb('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
+  if (existing) return res.status(409).json({ error: 'An account with this email already exists' });
+
+  try {
+    const passwordHash = bcrypt.hashSync(password, 10);
+    const name = (display_name && display_name.trim()) || null;
+    const id = insertDb(
+      'INSERT INTO users (email, password_hash, display_name) VALUES (?, ?, ?)',
+      [normalizedEmail, passwordHash, name]
+    );
+    req.session.authenticated = true;
+    req.session.userId = id;
+    req.session.displayName = name;
+    res.status(201).json({ ok: true });
+  } catch (e) {
+    if (e.message && e.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'An account with this email already exists' });
+    }
+    res.status(500).json({ error: 'Failed to create account' });
   }
 });
 
@@ -342,23 +432,20 @@ app.post('/api/auth/name', requireAuth, (req, res) => {
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({
-    name: req.session.displayName || null,
-    email: null
-  });
+  if (req.session.userId) {
+    const user = getDb('SELECT id, email, display_name FROM users WHERE id = ?', [req.session.userId]);
+    if (user) return res.json({ id: user.id, name: user.display_name || null, email: user.email });
+  }
+  res.json({ name: req.session.displayName || null, email: null });
 });
 
 // ── Project routes ────────────────────────────────────────────────────────────
 app.get('/api/projects', requireAuth, (req, res) => {
   try {
-    const projects = allDb(`
-      SELECT p.id, p.name, p.created_at,
-             COUNT(v.id) AS video_count
-      FROM projects p
-      LEFT JOIN videos v ON v.project_id = p.id
-      GROUP BY p.id
-      ORDER BY p.created_at DESC
-    `);
+    const userId = req.session.userId;
+    const projects = userId
+      ? allDb(`SELECT p.id, p.name, p.created_at, COUNT(v.id) AS video_count FROM projects p LEFT JOIN videos v ON v.project_id = p.id WHERE p.owner_id = ? GROUP BY p.id ORDER BY p.created_at DESC`, [userId])
+      : allDb(`SELECT p.id, p.name, p.created_at, COUNT(v.id) AS video_count FROM projects p LEFT JOIN videos v ON v.project_id = p.id GROUP BY p.id ORDER BY p.created_at DESC`);
     res.json(projects);
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
@@ -370,9 +457,10 @@ app.post('/api/projects', requireAuth, (req, res) => {
   if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
 
   try {
-    const id = insertDb('INSERT INTO projects (name) VALUES (?)', [name.trim()]);
+    const ownerId = req.session.userId || null;
+    const id = insertDb('INSERT INTO projects (name, owner_id) VALUES (?, ?)', [name.trim(), ownerId]);
     const project = getDb('SELECT p.id, p.name, p.created_at, 0 AS video_count FROM projects p WHERE p.id = ?', [id]);
-    logHistory(null, id, 'admin', 'project_created', `Project "${name.trim()}" created`);
+    logHistory(null, id, req.session.displayName || 'admin', 'project_created', `Project "${name.trim()}" created`);
     res.status(201).json(project);
   } catch (e) {
     res.status(500).json({ error: 'Database error: ' + e.message });
@@ -380,8 +468,9 @@ app.post('/api/projects', requireAuth, (req, res) => {
 });
 
 app.get('/api/projects/:id', requireAuth, (req, res) => {
-  const project = getDb('SELECT p.id, p.name, p.created_at FROM projects p WHERE p.id = ?', [req.params.id]);
+  const project = getDb('SELECT p.id, p.name, p.created_at, p.owner_id FROM projects p WHERE p.id = ?', [req.params.id]);
   if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (req.session.userId && project.owner_id && project.owner_id !== req.session.userId) return res.status(403).json({ error: 'Forbidden' });
 
   const videos = allDb(`
     SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
@@ -445,47 +534,21 @@ app.get('/api/projects/:id/history', requireAuth, (req, res) => {
 
 app.get('/api/videos', requireAuth, (req, res) => {
   try {
+    const userId = req.session.userId;
+    const ownerFilter = userId ? ' AND v.owner_id = ?' : '';
+    const ownerParam = userId ? [userId] : [];
     let sql, params;
     if (req.query.project_id !== undefined) {
       if (req.query.project_id === 'null' || req.query.project_id === '') {
-        sql = `
-          SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
-                 v.created_at, COUNT(c.id) AS comment_count, NULL AS project_name
-          FROM videos v
-          LEFT JOIN comments c ON c.video_id = v.id
-          WHERE v.project_id IS NULL AND v.version_number = 1
-          GROUP BY v.id
-          ORDER BY v.created_at DESC
-        `;
-        params = [];
+        sql = `SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type, v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name, v.created_at, COUNT(c.id) AS comment_count, NULL AS project_name FROM videos v LEFT JOIN comments c ON c.video_id = v.id WHERE v.project_id IS NULL AND v.version_number = 1${ownerFilter} GROUP BY v.id ORDER BY v.created_at DESC`;
+        params = [...ownerParam];
       } else {
-        sql = `
-          SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-                 v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
-                 v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
-          FROM videos v
-          LEFT JOIN comments c ON c.video_id = v.id
-          LEFT JOIN projects p ON p.id = v.project_id
-          WHERE v.project_id = ? AND v.version_number = 1
-          GROUP BY v.id
-          ORDER BY v.created_at DESC
-        `;
-        params = [req.query.project_id];
+        sql = `SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type, v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name, v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name FROM videos v LEFT JOIN comments c ON c.video_id = v.id LEFT JOIN projects p ON p.id = v.project_id WHERE v.project_id = ? AND v.version_number = 1${ownerFilter} GROUP BY v.id ORDER BY v.created_at DESC`;
+        params = [req.query.project_id, ...ownerParam];
       }
     } else {
-      sql = `
-        SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type,
-               v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name,
-               v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name
-        FROM videos v
-        LEFT JOIN comments c ON c.video_id = v.id
-        LEFT JOIN projects p ON p.id = v.project_id
-        WHERE v.version_number = 1
-        GROUP BY v.id
-        ORDER BY v.created_at DESC
-      `;
-      params = [];
+      sql = `SELECT v.id, v.project_id, v.name, v.filename, v.original_name, v.mime_type, v.share_token, v.view_token, v.allow_comments, v.version_group_id, v.version_number, v.version_name, v.created_at, COUNT(c.id) AS comment_count, p.name AS project_name FROM videos v LEFT JOIN comments c ON c.video_id = v.id LEFT JOIN projects p ON p.id = v.project_id WHERE v.version_number = 1${ownerFilter} GROUP BY v.id ORDER BY v.created_at DESC`;
+      params = [...ownerParam];
     }
     const videos = allDb(sql, params);
     res.json(videos);
@@ -495,7 +558,7 @@ app.get('/api/videos', requireAuth, (req, res) => {
 });
 
 app.post('/api/videos', requireAuth, (req, res) => {
-  uploadVideo.single('video')(req, res, err => {
+  uploadVideo.single('video')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
 
@@ -508,17 +571,20 @@ app.post('/api/videos', requireAuth, (req, res) => {
     const versionGroupId = uuidv4();
 
     try {
+      let filename;
+      if (S3_BUCKET) {
+        filename = uuidv4() + path.extname(req.file.originalname);
+        await uploadToS3(req.file.buffer, `videos/${filename}`, req.file.mimetype || 'video/mp4');
+      } else {
+        filename = req.file.filename;
+      }
+      const ownerId = req.session.userId || null;
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [projectId, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1']
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, name, filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1', ownerId]
       );
-      const video = getDb(`
-        SELECT v.*, 0 AS comment_count, p.name AS project_name
-        FROM videos v
-        LEFT JOIN projects p ON p.id = v.project_id
-        WHERE v.id = ?
-      `, [id]);
-      logHistory(id, projectId, 'admin', 'video_uploaded', `Video "${name}" uploaded as V1`);
+      const video = getDb(`SELECT v.*, 0 AS comment_count, p.name AS project_name FROM videos v LEFT JOIN projects p ON p.id = v.project_id WHERE v.id = ?`, [id]);
+      logHistory(id, projectId, req.session.displayName || 'admin', 'video_uploaded', `Video "${name}" uploaded as V1`);
       res.status(201).json(video);
     } catch (e) {
       res.status(500).json({ error: 'Database error: ' + e.message });
@@ -530,7 +596,7 @@ app.post('/api/projects/:id/videos', requireAuth, (req, res) => {
   const project = getDb('SELECT id FROM projects WHERE id = ?', [req.params.id]);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  uploadVideo.single('video')(req, res, err => {
+  uploadVideo.single('video')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
 
@@ -540,12 +606,20 @@ app.post('/api/projects/:id/videos', requireAuth, (req, res) => {
     const versionGroupId = uuidv4();
 
     try {
+      let filename;
+      if (S3_BUCKET) {
+        filename = uuidv4() + path.extname(req.file.originalname);
+        await uploadToS3(req.file.buffer, `videos/${filename}`, req.file.mimetype || 'video/mp4');
+      } else {
+        filename = req.file.filename;
+      }
+      const ownerId = req.session.userId || null;
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [req.params.id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1']
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [req.params.id, name, filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, 1, 'V1', ownerId]
       );
       const video = getDb('SELECT *, 0 AS comment_count FROM videos WHERE id = ?', [id]);
-      logHistory(id, req.params.id, 'admin', 'video_uploaded', `Video "${name}" uploaded to project`);
+      logHistory(id, req.params.id, req.session.displayName || 'admin', 'video_uploaded', `Video "${name}" uploaded to project`);
       res.status(201).json(video);
     } catch (e) {
       res.status(500).json({ error: 'Database error: ' + e.message });
@@ -595,7 +669,7 @@ app.patch('/api/videos/:id', requireAuth, (req, res) => {
   }
 });
 
-app.delete('/api/videos/:id', requireAuth, (req, res) => {
+app.delete('/api/videos/:id', requireAuth, async (req, res) => {
   const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
@@ -604,13 +678,21 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
     for (const comment of videoComments) {
       const attachments = allDb('SELECT filename FROM attachments WHERE comment_id = ?', [comment.id]);
       for (const att of attachments) {
-        const attPath = path.join(ATTACHMENTS_DIR, att.filename);
-        if (fs.existsSync(attPath)) fs.unlinkSync(attPath);
+        if (S3_BUCKET) {
+          await deleteFromS3(`attachments/${att.filename}`);
+        } else {
+          const attPath = path.join(ATTACHMENTS_DIR, att.filename);
+          if (fs.existsSync(attPath)) fs.unlinkSync(attPath);
+        }
       }
     }
 
-    const videoPath = path.join(VIDEOS_DIR, video.filename);
-    if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+    if (S3_BUCKET) {
+      await deleteFromS3(`videos/${video.filename}`);
+    } else {
+      const videoPath = path.join(VIDEOS_DIR, video.filename);
+      if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+    }
 
     runDb('DELETE FROM videos WHERE id = ?', [req.params.id]);
     res.json({ ok: true });
@@ -619,9 +701,13 @@ app.delete('/api/videos/:id', requireAuth, (req, res) => {
   }
 });
 
-app.get('/api/videos/:id/stream', requireAuth, (req, res) => {
+app.get('/api/videos/:id/stream', requireAuth, async (req, res) => {
   const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
+  if (S3_BUCKET) {
+    const url = await getS3Url(`videos/${video.filename}`);
+    return res.redirect(302, url);
+  }
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Cache-Control', 'private, max-age=3600');
@@ -650,7 +736,7 @@ app.post('/api/videos/:id/comments', requireAuth, (req, res) => {
   });
 });
 
-function _handleVideoComment(req, res) {
+async function _handleVideoComment(req, res) {
   const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
@@ -678,9 +764,16 @@ function _handleVideoComment(req, res) {
 
     // Handle single attachment (for annotation tool)
     if (req.file) {
+      let attFilename;
+      if (S3_BUCKET) {
+        attFilename = uuidv4() + path.extname(req.file.originalname || '.png');
+        await uploadToS3(req.file.buffer, `attachments/${attFilename}`, req.file.mimetype || 'image/png');
+      } else {
+        attFilename = req.file.filename;
+      }
       insertDb(
         'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
-        [id, req.file.filename, req.file.originalname, req.file.mimetype || 'image/png']
+        [id, attFilename, req.file.originalname, req.file.mimetype || 'image/png']
       );
       const attachments = allDb('SELECT * FROM attachments WHERE comment_id = ? ORDER BY created_at ASC', [id]);
       return res.status(201).json({ ...comment, attachments });
@@ -764,38 +857,39 @@ app.post('/api/videos/:id/versions', requireAuth, (req, res) => {
   const parentVideo = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
   if (!parentVideo) return res.status(404).json({ error: 'Video not found' });
 
-  uploadVideo.single('video')(req, res, err => {
+  uploadVideo.single('video')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
 
     try {
-      // Get the current max version number in this group
       const versionGroupId = parentVideo.version_group_id || uuidv4();
-
-      // If parent has no version_group_id yet, assign one to it
       if (!parentVideo.version_group_id) {
         runDb('UPDATE videos SET version_group_id = ?, version_number = 1, version_name = ? WHERE id = ?',
           [versionGroupId, 'V1', parentVideo.id]);
       }
 
-      const maxRow = getDb(
-        'SELECT MAX(version_number) AS max_ver FROM videos WHERE version_group_id = ?',
-        [versionGroupId]
-      );
+      const maxRow = getDb('SELECT MAX(version_number) AS max_ver FROM videos WHERE version_group_id = ?', [versionGroupId]);
       const newVersionNumber = (maxRow && maxRow.max_ver ? maxRow.max_ver : 1) + 1;
       const newVersionName = `V${newVersionNumber}`;
-
       const name = (req.body.name && req.body.name.trim()) || parentVideo.name;
       const shareToken = uuidv4();
       const viewToken = uuidv4();
 
+      let filename;
+      if (S3_BUCKET) {
+        filename = uuidv4() + path.extname(req.file.originalname);
+        await uploadToS3(req.file.buffer, `videos/${filename}`, req.file.mimetype || 'video/mp4');
+      } else {
+        filename = req.file.filename;
+      }
+      const ownerId = req.session.userId || null;
       const id = insertDb(
-        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [parentVideo.project_id, name, req.file.filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, newVersionNumber, newVersionName]
+        `INSERT INTO videos (project_id, name, filename, original_name, mime_type, share_token, view_token, version_group_id, version_number, version_name, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [parentVideo.project_id, name, filename, req.file.originalname, req.file.mimetype || 'video/mp4', shareToken, viewToken, versionGroupId, newVersionNumber, newVersionName, ownerId]
       );
 
       const newVideo = getDb('SELECT * FROM videos WHERE id = ?', [id]);
-      logHistory(id, parentVideo.project_id, 'admin', 'version_created', `${newVersionName} created for "${name}"`);
+      logHistory(id, parentVideo.project_id, req.session.displayName || 'admin', 'version_created', `${newVersionName} created for "${name}"`);
       res.status(201).json(newVideo);
     } catch (e) {
       res.status(500).json({ error: 'Database error: ' + e.message });
@@ -916,16 +1010,23 @@ app.post('/api/comments/:id/attachments', requireAuth, (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ?', [req.params.id]);
   if (!comment) return res.status(404).json({ error: 'Comment not found' });
 
-  uploadAttachments.array('files', 20)(req, res, err => {
+  uploadAttachments.array('files', 20)(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
 
     try {
       const inserted = [];
       for (const file of req.files) {
+        let filename;
+        if (S3_BUCKET) {
+          filename = uuidv4() + path.extname(file.originalname || '');
+          await uploadToS3(file.buffer, `attachments/${filename}`, file.mimetype || 'application/octet-stream');
+        } else {
+          filename = file.filename;
+        }
         const id = insertDb(
           'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
-          [req.params.id, file.filename, file.originalname, file.mimetype || 'application/octet-stream']
+          [req.params.id, filename, file.originalname, file.mimetype || 'application/octet-stream']
         );
         inserted.push(getDb('SELECT * FROM attachments WHERE id = ?', [id]));
       }
@@ -936,9 +1037,13 @@ app.post('/api/comments/:id/attachments', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/attachments/:filename', requireAuth, (req, res) => {
+app.get('/api/attachments/:filename', requireAuth, async (req, res) => {
   const att = getDb('SELECT * FROM attachments WHERE filename = ?', [req.params.filename]);
   if (!att) return res.status(404).json({ error: 'Attachment not found' });
+  if (S3_BUCKET) {
+    const url = await getS3Url(`attachments/${att.filename}`);
+    return res.redirect(302, url);
+  }
   streamFile(req, res, path.join(ATTACHMENTS_DIR, att.filename), att.mime_type);
 });
 
@@ -1115,7 +1220,7 @@ app.post('/api/share/:token/annotations', (req, res) => {
   }
 });
 
-app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('files', 10), (req, res) => {
+app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('files', 10), async (req, res) => {
   const resolved = resolveShareToken(req.params.token);
   if (!resolved) return res.status(404).json({ error: 'Share link not found' });
   const { video, allowComments } = resolved;
@@ -1126,7 +1231,13 @@ app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('
   try {
     const inserted = [];
     for (const file of req.files) {
-      const filename = file.filename;
+      let filename;
+      if (S3_BUCKET) {
+        filename = uuidv4() + path.extname(file.originalname || '');
+        await uploadToS3(file.buffer, `attachments/${filename}`, file.mimetype || 'application/octet-stream');
+      } else {
+        filename = file.filename;
+      }
       const id = insertDb(
         'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
         [comment.id, filename, file.originalname, file.mimetype || 'application/octet-stream']
@@ -1139,15 +1250,19 @@ app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('
   }
 });
 
-app.get('/api/share/:token/stream', (req, res) => {
+app.get('/api/share/:token/stream', async (req, res) => {
   const resolved = resolveShareToken(req.params.token);
   if (!resolved) return res.status(404).json({ error: 'Share link not found' });
   const { video } = resolved;
+  if (S3_BUCKET) {
+    const url = await getS3Url(`videos/${video.filename}`);
+    return res.redirect(302, url);
+  }
   res.setHeader('Cache-Control', 'private, max-age=3600');
   streamFile(req, res, path.join(VIDEOS_DIR, video.filename), video.mime_type);
 });
 
-app.get('/api/share/:token/attachments/:filename', (req, res) => {
+app.get('/api/share/:token/attachments/:filename', async (req, res) => {
   const resolved = resolveShareToken(req.params.token);
   if (!resolved) return res.status(404).json({ error: 'Share link not found' });
   const { video } = resolved;
@@ -1158,6 +1273,10 @@ app.get('/api/share/:token/attachments/:filename', (req, res) => {
   const comment = getDb('SELECT * FROM comments WHERE id = ? AND video_id = ?', [att.comment_id, video.id]);
   if (!comment) return res.status(403).json({ error: 'Forbidden' });
 
+  if (S3_BUCKET) {
+    const url = await getS3Url(`attachments/${att.filename}`);
+    return res.redirect(302, url);
+  }
   streamFile(req, res, path.join(ATTACHMENTS_DIR, att.filename), att.mime_type);
 });
 

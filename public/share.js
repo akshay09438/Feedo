@@ -258,7 +258,7 @@
     }
 
     // Seed color map in chronological order so colors are stable across renders
-    comments.forEach(c => getAuthorColor(c.author || 'guest'));
+    comments.forEach(c => getAuthorColor(c.guest_id || c.author || 'guest'));
 
     commentsList.innerHTML = '';
     filtered.forEach(c => commentsList.appendChild(buildCommentCard(c)));
@@ -283,7 +283,7 @@
     const authorRaw = comment.author || 'guest';
     // Legacy "guest:<uuid>" → show as "Guest"; display_name stored directly → show as-is
     const displayAuthor = authorRaw.startsWith('guest:') ? 'Guest' : authorRaw;
-    const pillColor = getAuthorColor(authorRaw);
+    const pillColor = getAuthorColor(comment.guest_id || authorRaw);
 
     card.innerHTML = `
       <div class="comment-main-row">
@@ -512,7 +512,7 @@
     );
     const authorRaw = reply.author || 'guest';
     const displayAuthor = authorRaw.startsWith('guest:') ? 'Guest' : authorRaw;
-    const pillColor = getAuthorColor(authorRaw);
+    const pillColor = getAuthorColor(reply.guest_id || authorRaw);
 
     card.innerHTML = `
       <div class="reply-header">

@@ -5,7 +5,6 @@
   initTheme();
 
   function showNamePrompt() {
-    // Build a simple modal overlay
     let backdrop = document.getElementById('modal-backdrop');
     if (!backdrop) {
       backdrop = document.createElement('div');
@@ -51,15 +50,40 @@
     setTimeout(() => input.focus(), 50);
   }
 
-  const loginForm     = document.getElementById('login-form');
-  const usernameInput = document.getElementById('username-input');
-  const passwordInput = document.getElementById('password-input');
-  const loginError    = document.getElementById('login-error');
+  // ── Tab switching ─────────────────────────────────────────────────────────────
+  const tabSignin  = document.getElementById('tab-signin');
+  const tabSignup  = document.getElementById('tab-signup');
+  const loginForm  = document.getElementById('login-form');
+  const signupForm = document.getElementById('signup-form');
 
-  // If already authenticated, redirect to home
+  function showTab(tab) {
+    if (tab === 'signin') {
+      tabSignin.classList.add('active');
+      tabSignup.classList.remove('active');
+      loginForm.style.display = '';
+      signupForm.style.display = 'none';
+      document.getElementById('login-error').classList.remove('visible');
+    } else {
+      tabSignup.classList.add('active');
+      tabSignin.classList.remove('active');
+      signupForm.style.display = '';
+      loginForm.style.display = 'none';
+      document.getElementById('signup-error').classList.remove('visible');
+    }
+  }
+
+  tabSignin.addEventListener('click', () => showTab('signin'));
+  tabSignup.addEventListener('click', () => showTab('signup'));
+
+  // ── Auth status check ─────────────────────────────────────────────────────────
   fetch('/api/auth/status').then(r => r.json()).then(data => {
     if (data.authenticated) window.location.href = '/';
   }).catch(() => {});
+
+  // ── Sign In ───────────────────────────────────────────────────────────────────
+  const usernameInput = document.getElementById('username-input');
+  const passwordInput = document.getElementById('password-input');
+  const loginError    = document.getElementById('login-error');
 
   loginForm.addEventListener('submit', async e => {
     e.preventDefault();
@@ -67,7 +91,7 @@
     const password = passwordInput.value;
 
     if (!username || !password) {
-      loginError.textContent = 'Please enter both username and password.';
+      loginError.textContent = 'Please enter both email and password.';
       loginError.classList.add('visible');
       return;
     }
@@ -93,7 +117,7 @@
           window.location.href = '/';
         }
       } else {
-        loginError.textContent = data.error || 'Incorrect username or password. Please try again.';
+        loginError.textContent = data.error || 'Incorrect email or password. Please try again.';
         loginError.classList.add('visible');
         passwordInput.value = '';
         passwordInput.focus();
@@ -104,6 +128,69 @@
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = 'Sign In';
+    }
+  });
+
+  // ── Sign Up ───────────────────────────────────────────────────────────────────
+  const signupError    = document.getElementById('signup-error');
+  const signupName     = document.getElementById('signup-name-input');
+  const signupEmail    = document.getElementById('signup-email-input');
+  const signupPassword = document.getElementById('signup-password-input');
+  const signupConfirm  = document.getElementById('signup-confirm-input');
+
+  signupForm.addEventListener('submit', async e => {
+    e.preventDefault();
+
+    const name     = signupName.value.trim();
+    const email    = signupEmail.value.trim();
+    const password = signupPassword.value;
+    const confirm  = signupConfirm.value;
+
+    if (!email) {
+      signupError.textContent = 'Please enter your email.';
+      signupError.classList.add('visible');
+      signupEmail.focus();
+      return;
+    }
+    if (!password || password.length < 8) {
+      signupError.textContent = 'Password must be at least 8 characters.';
+      signupError.classList.add('visible');
+      signupPassword.focus();
+      return;
+    }
+    if (password !== confirm) {
+      signupError.textContent = 'Passwords do not match.';
+      signupError.classList.add('visible');
+      signupConfirm.focus();
+      return;
+    }
+
+    signupError.classList.remove('visible');
+    const submitBtn = signupForm.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating account…';
+
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, display_name: name || null })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.ok) {
+        if (name) localStorage.setItem('feedo_display_name', name);
+        window.location.href = '/';
+      } else {
+        signupError.textContent = data.error || 'Failed to create account. Please try again.';
+        signupError.classList.add('visible');
+      }
+    } catch (err) {
+      signupError.textContent = 'Connection error. Please try again.';
+      signupError.classList.add('visible');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Create Account';
     }
   });
 })();
