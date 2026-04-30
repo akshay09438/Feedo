@@ -2,7 +2,7 @@
 
 const express = require('express');
 const compression = require('compression');
-const session = require('express-session');
+const cookieSession = require('cookie-session');
 const multer = require('multer');
 const initSqlJs = require('sql.js');
 const { v4: uuidv4 } = require('uuid');
@@ -58,7 +58,7 @@ async function deleteFromS3(key) {
 }
 
 async function getS3Url(key) {
-  return getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }), { expiresIn: 3600 });
+  return getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }), { expiresIn: 604800 });
 }
 
 async function downloadDbFromS3() {
@@ -339,11 +339,12 @@ const uploadAttachments = multer({
 app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'feedo-secret-2026',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }
+app.use(cookieSession({
+  name: 'feedo_session',
+  keys: [process.env.SESSION_SECRET || 'feedo-secret-2026'],
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+  httpOnly: true,
+  sameSite: 'lax'
 }));
 app.use(express.static(path.join(ROOT, 'public'), {
   index: false,
@@ -446,7 +447,8 @@ app.post('/api/auth/signup', (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  req.session = null;
+  res.json({ ok: true });
 });
 
 app.get('/api/auth/status', (req, res) => {
