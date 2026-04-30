@@ -1564,6 +1564,24 @@
     });
   }
 
+  // Listen for annotation comments posted by VideoAnnotator (avoids window._feedo timing issues)
+  document.addEventListener('feedo:commentAdded', e => {
+    const c = e.detail;
+    if (comments.find(x => x.id === c.id)) return; // already in list (e.g. from polling)
+    comments.push(c);
+    comments.sort((a, b) => a.timestamp - b.timestamp);
+    renderComments();
+    if (player) player.renderMarkers();
+    requestAnimationFrame(() => {
+      const card = document.querySelector(`.comment-card[data-id="${c.id}"]`);
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        card.classList.add('active-comment');
+        setTimeout(() => card.classList.remove('active-comment'), 1500);
+      }
+    });
+  });
+
   // Init
   init();
 })();

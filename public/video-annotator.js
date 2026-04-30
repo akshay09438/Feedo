@@ -146,14 +146,9 @@ class VideoAnnotator {
         thumbnailDataUrl: thumbnail
       }));
 
-      // Add to comment panel immediately — don't wait for annotation saves
-      if (window._feedo) {
-        window._feedo.addComment(newComment);
-      } else {
-        // _feedo not ready (rare race) — reload comments from server
-        if (typeof showToast === 'function') showToast('Comment saved!', 'success');
-        setTimeout(() => window.location.reload(), 1200);
-      }
+      // Notify the comment panel — CustomEvent avoids the async window._feedo timing race
+      document.dispatchEvent(new CustomEvent('feedo:commentAdded', { detail: newComment }));
+      if (typeof showToast === 'function') showToast('Comment added', 'success');
 
       // Save drawing data to server in background so share users can see it.
       // Strokes/textBox coords stored as 0-100 percent; server expects 0-1 normalized.
