@@ -94,11 +94,11 @@ class VideoAnnotator {
   }
 
   _onPost() {
-    this.stage = 'composing';
     this.toolbar.hide();
-    this.canvas.setTool(null);
-    const thumbnail = this.canvas.getSnapshot();
-    this.composer.show(thumbnail, this.currentTimestamp);
+    const text = this.canvas.textBoxes.length > 0
+      ? this.canvas.textBoxes[0].text
+      : 'Drawing';
+    this._onCommentSubmit(text);
   }
 
   async _onCommentSubmit(commentText) {
