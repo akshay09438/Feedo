@@ -21,17 +21,6 @@ const CREDENTIALS = {
   password: process.env.ADMIN_PASSWORD || 'banana'
 };
 
-// ── Directories ───────────────────────────────────────────────────────────────
-const ROOT = __dirname;
-const UPLOADS_BASE = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
-const VIDEOS_DIR = path.join(UPLOADS_BASE, 'videos');
-const ATTACHMENTS_DIR = path.join(UPLOADS_BASE, 'attachments');
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
-
-[VIDEOS_DIR, ATTACHMENTS_DIR].forEach(d => {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-});
-
 // ── S3 / Cloud storage ────────────────────────────────────────────────────────
 const S3_BUCKET = process.env.S3_BUCKET || null;
 const s3 = S3_BUCKET ? new S3Client({
@@ -41,6 +30,17 @@ const s3 = S3_BUCKET ? new S3Client({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
   }
 }) : null;
+
+// ── Directories ───────────────────────────────────────────────────────────────
+const ROOT = __dirname;
+const UPLOADS_BASE = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
+const VIDEOS_DIR = path.join(UPLOADS_BASE, 'videos');
+const ATTACHMENTS_DIR = path.join(UPLOADS_BASE, 'attachments');
+const DB_PATH = process.env.DB_PATH || (S3_BUCKET ? '/tmp/data.db' : path.join(__dirname, 'data.db'));
+
+[VIDEOS_DIR, ATTACHMENTS_DIR].forEach(d => {
+  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+});
 
 async function uploadToS3(buffer, key, mimeType) {
   await s3.send(new PutObjectCommand({
@@ -61,6 +61,31 @@ async function getS3Url(key) {
   return getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }), { expiresIn: 3600 });
 }
 
+async function downloadDbFromS3() {
+  try {
+    const resp = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: 'db/data.db' }));
+    const chunks = [];
+    for await (const chunk of resp.Body) chunks.push(chunk);
+    fs.writeFileSync(DB_PATH, Buffer.concat(chunks));
+    console.log('Database loaded from S3');
+  } catch (e) {
+    if (e.name !== 'NoSuchKey') console.error('S3 DB download error:', e.message);
+  }
+}
+
+async function uploadDbToS3() {
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: 'db/data.db',
+      Body: fs.readFileSync(DB_PATH),
+      ContentType: 'application/octet-stream'
+    }));
+  } catch (e) {
+    console.error('S3 DB upload error:', e.message);
+  }
+}
+
 // ── Database (sql.js — pure WASM, no native build required) ──────────────────
 let db;
 
@@ -73,6 +98,7 @@ function saveDb() {
     try {
       const data = db.export();
       fs.writeFileSync(DB_PATH, Buffer.from(data));
+      if (S3_BUCKET) uploadDbToS3().catch(e => console.error('S3 DB save error:', e.message));
     } catch(e) { console.error('saveDb error:', e); }
   }, 300);
 }
@@ -82,6 +108,7 @@ function saveDbNow() {
   try {
     const data = db.export();
     fs.writeFileSync(DB_PATH, Buffer.from(data));
+    if (S3_BUCKET) uploadDbToS3().catch(e => console.error('S3 DB save error:', e.message));
   } catch(e) { console.error('saveDbNow error:', e); }
 }
 process.on('SIGTERM', () => { saveDbNow(); process.exit(0); });
@@ -123,6 +150,8 @@ function insertDb(sql, params = []) {
 }
 
 async function initDatabase() {
+  if (S3_BUCKET) await downloadDbFromS3();
+
   const SQL = await initSqlJs();
 
   if (fs.existsSync(DB_PATH)) {
