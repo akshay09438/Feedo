@@ -152,18 +152,12 @@
         comments.sort((a, b) => a.timestamp - b.timestamp);
         renderComments();
         if (player) player.renderMarkers();
-        // Scroll to the new card
         const newCard = document.querySelector(`.comment-card[data-id="${c.id}"]`);
         if (newCard) {
           newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
           newCard.classList.add('active-comment');
           setTimeout(() => newCard.classList.remove('active-comment'), 1500);
         }
-      },
-      // Called by VideoAnnotator after saving each annotation to the server so
-      // the playback render loop can show it immediately without a page reload.
-      pushAnnotation(ann) {
-        annotations.push(ann);
       }
     };
   }
@@ -222,7 +216,10 @@
       return true;
     });
 
-    commentCountBadge.textContent = topLevel.length;
+    // The badge should match what's actually rendered: all comments minus
+    // annotation comments (already in #annotation-comment-list) minus replies.
+    const badgeCount = topLevel.length;
+    commentCountBadge.textContent = badgeCount;
 
     if (filtered.length === 0) {
       commentsList.innerHTML = `
@@ -256,10 +253,12 @@
     const displayAuthor = author.startsWith('guest:') ? 'Guest' : author;
     const pillColor = getAuthorColor(author);
 
-    // Check for annotation visual data (canvas drawing)
+    // Annotation comments get a Drawing badge + thumbnail preview if available.
+    // Show badge even without thumbnail (for newly posted annotations).
     let annotData = null;
     try { annotData = JSON.parse(localStorage.getItem('annot_' + comment.id)); } catch(e) {}
-    const annotBadge = annotData ? `<span style="font-size:11px; color:var(--text-secondary); margin-left:4px;">🎨 Drawing</span>` : '';
+    const hasDrawing = comment.isAnnotation && annotData;
+    const annotBadge = hasDrawing ? `<span style="font-size:11px; color:var(--text-secondary); margin-left:4px;">🎨 Drawing</span>` : '';
     const annotThumb = annotData && annotData.thumbnailDataUrl ? `
       <div style="margin:6px 0;">
         <img src="${annotData.thumbnailDataUrl}"
@@ -1567,9 +1566,11 @@
   // Listen for annotation comments posted by VideoAnnotator (avoids window._feedo timing issues)
   document.addEventListener('feedo:commentAdded', e => {
     const c = e.detail;
-    if (comments.find(x => x.id === c.id)) return; // already in list (e.g. from polling)
-    comments.push(c);
-    comments.sort((a, b) => a.timestamp - b.timestamp);
+    // Annotation comments now render inline in #comments-list just like regular comments.
+    if (!comments.find(x => x.id === c.id)) {
+      comments.push(c);
+      comments.sort((a, b) => a.timestamp - b.timestamp);
+    }
     renderComments();
     if (player) player.renderMarkers();
     requestAnimationFrame(() => {
@@ -1580,6 +1581,11 @@
         setTimeout(() => card.classList.remove('active-comment'), 1500);
       }
     });
+  });
+
+  // Collect server annotations so the RAF playback loop can render them.
+  document.addEventListener('feedo:annotationSaved', e => {
+    annotations.push(e.detail);
   });
 
   // Init

@@ -125,9 +125,6 @@
           </div>
         </div>
 
-        <!-- Annotation comments (canvas drawings) render here, above regular comments -->
-        <div id="annotation-comment-list"></div>
-
         <div class="comments-list" id="comments-list">
           <div style="text-align:center; padding:40px; color:var(--text-secondary);">
             <div class="spinner" style="margin: 0 auto 12px;"></div>
@@ -194,10 +191,9 @@
   const videoId = vIdx !== -1 ? parts[vIdx + 1] : null;
   if (!videoId) return;
 
-  const videoEl     = document.getElementById('video-el');
-  const commentList = document.getElementById('annotation-comment-list');
-  if (videoEl && commentList) {
-    window._videoAnnotator = new VideoAnnotator(videoEl, commentList, videoId);
+  const videoEl = document.getElementById('video-el');
+  if (videoEl) {
+    window._videoAnnotator = new VideoAnnotator(videoEl, null, videoId);
   }
 })();
 </script>

@@ -13,14 +13,17 @@ function _getAnnotAuthorColor(author) {
 
 function createCommentItem(annotation, onClick) {
   const author = annotation.authorId || 'user';
-  const pillColor = _getAnnotAuthorColor(author);
   const displayAuthor = author === 'user'
     ? (localStorage.getItem('feedo_display_name') || 'You')
     : author;
+  const pillColor = annotation.authorColor || _getAnnotAuthorColor(author);
 
   const card = document.createElement('div');
   card.className = 'comment-card';
   card.style.cursor = 'pointer';
+  card.dataset.id = annotation.id;          // used by renderComments() to deduplicate
+  card.dataset.timestamp = annotation.timestamp;
+  card.dataset.isAnnotation = 'true';
 
   card.innerHTML = `
     <div class="comment-main-row">

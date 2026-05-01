@@ -12,6 +12,7 @@ class VideoAnnotator {
     this._replayTimer     = null;
     this._suppressPause   = false; // prevent replay-pause from opening toolbar
     this._hasPlayed       = false; // don't open toolbar before first play
+    this._pendingThumbnail = null; // thumbnail captured in _onPost(), used in _onCommentSubmit()
 
     const wrapper = videoEl.parentElement; // .video-wrapper
 
@@ -25,13 +26,10 @@ class VideoAnnotator {
     wrapper.insertAdjacentElement('afterend', composerWrap);
     this.composer = new AnnotationComposer(composerWrap);
 
-    // ── Load + render saved annotation comments ────────────────────────────
+    // ── Load + render saved annotation data ────────────────────────────────
     this.annotations = loadAnnotations(videoId);
-    this.annotations.forEach(ann => {
-      this.commentListEl.appendChild(
-        createCommentItem(ann, a => this._onCommentClick(a))
-      );
-    });
+    // Legacy: annotations were previously rendered as DOM cards here.
+    // Now handled by video.js renderComments() — just load data silently.
 
     // ── Wire canvas callbacks ──────────────────────────────────────────────
     this.canvas.onStrokeComplete  = s  => this._onStrokeComplete(s);
@@ -95,17 +93,16 @@ class VideoAnnotator {
 
   _onPost() {
     this.toolbar.hide();
-    const text = this.canvas.textBoxes.length > 0
-      ? this.canvas.textBoxes[0].text
-      : 'Drawing';
-    this._onCommentSubmit(text);
+    const thumbnail = this.canvas.getSnapshot();
+    this.composer.show(thumbnail, this.currentTimestamp);
   }
 
   async _onCommentSubmit(commentText) {
-    const author = localStorage.getItem('feedo_display_name') || 'Admin';
-    const strokes    = [...this.canvas.strokes];
-    const textBoxes  = [...this.canvas.textBoxes];
-    const thumbnail  = this.canvas.getSnapshot();
+    const author   = localStorage.getItem('feedo_display_name') || 'Admin';
+    const strokes   = [...this.canvas.strokes];
+    const textBoxes = [...this.canvas.textBoxes];
+    const thumbnail = this._pendingThumbnail;
+    this._pendingThumbnail = null;
 
     this.composer.hide();
 
@@ -114,7 +111,7 @@ class VideoAnnotator {
     // if _syncSize() reads offsetWidth=0 during the brief layout-pending window.
     // Just disable interaction and let the RAF leave the canvas alone (stage≠idle).
     this.canvas.setTool(null);
-    this.stage = 'replaying'; // annotation persists until video plays (_cancel clears it)
+    this.stage = 'idle'; // back to idle so the RAF loop controls visibility based on currentTime
     if (this._replayTimer) { clearTimeout(this._replayTimer); this._replayTimer = null; }
 
     try {
@@ -138,26 +135,23 @@ class VideoAnnotator {
 
       const newComment = await res.json();
       newComment.attachments = [];
+      newComment.isAnnotation = true; // prevents buildCommentCard from rendering a duplicate card
+      newComment.author = author;      // same value buildCommentCard uses → same color
 
-      // Save the visual drawing data locally, keyed by server comment ID
-      localStorage.setItem('annot_' + newComment.id, JSON.stringify({
-        strokes,
-        textBoxes,
-        thumbnailDataUrl: thumbnail
-      }));
+      // Compute author color using same hash as video.js getAuthorColor()
+      let h = 0;
+      for (let i = 0; i < author.length; i++) h = (h * 31 + author.charCodeAt(i)) >>> 0;
+      const pillColor = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'][h % 10];
 
-      // Add click-to-replay card to the annotation list (top of comments panel)
-      this.commentListEl.prepend(
-        createCommentItem(
-          { id: newComment.id, timestamp: this.currentTimestamp, strokes, textBoxes,
-            thumbnailDataUrl: thumbnail, commentText, authorId: 'user' },
-          a => this._onCommentClick(a)
-        )
-      );
-
-      // Notify the comment panel — CustomEvent avoids the async window._feedo timing race
+      // Dispatch so video.js picks it up — it will call renderComments() which
+      // renders the card as a regular comment with Drawing badge + thumbnail.
       document.dispatchEvent(new CustomEvent('feedo:commentAdded', { detail: newComment }));
       if (typeof showToast === 'function') showToast('Comment added', 'success');
+
+      // Persist drawing data locally — no thumbnail (too large, risks QuotaExceededError)
+      try {
+        localStorage.setItem('annot_' + newComment.id, JSON.stringify({ strokes, textBoxes }));
+      } catch (e) { /* localStorage full — drawing data not cached locally, no big deal */ }
 
       // Save drawing data to server in background so share users can see it.
       // Strokes/textBox coords stored as 0-100 percent; server expects 0-1 normalized.
@@ -177,7 +171,9 @@ class VideoAnnotator {
         }).then(async r => {
           if (r.ok) {
             const { annotation } = await r.json();
-            if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
+            if (annotation) {
+              document.dispatchEvent(new CustomEvent('feedo:annotationSaved', { detail: annotation }));
+            }
           }
         }).catch(() => {});
       }
@@ -194,7 +190,9 @@ class VideoAnnotator {
         }).then(async r => {
           if (r.ok) {
             const { annotation } = await r.json();
-            if (annotation && window._feedo) window._feedo.pushAnnotation(annotation);
+            if (annotation) {
+              document.dispatchEvent(new CustomEvent('feedo:annotationSaved', { detail: annotation }));
+            }
           }
         }).catch(() => {});
       }
@@ -221,7 +219,7 @@ class VideoAnnotator {
     // Suppress any pause event the currentTime seek might fire so _startAnnotating
     // doesn't clear the canvas before (or after) loadAnnotation runs.
     this._suppressPause = true;
-    this.stage = 'replaying'; // annotation persists until video plays (_cancel clears it)
+    this.stage = 'idle'; // RAF loop controls visibility based on currentTime
     this.videoEl.currentTime = annotation.timestamp;
 
     this.toolbar.hide();
