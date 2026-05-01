@@ -73,8 +73,8 @@ class VideoAnnotator {
     this.stage            = 'annotating';
     this.currentTimestamp = timestamp;
     this.canvas.clearAll();
-    this.canvas.setTool('draw');
-    this.toolbar.setActiveTool('draw');
+    this.canvas.setTool(null);      // no tool active — cursor stays normal
+    this.toolbar.setActiveTool(null); // no button highlighted until user picks one
     this.toolbar.setPostEnabled(false);
     this.toolbar.show();
   }
