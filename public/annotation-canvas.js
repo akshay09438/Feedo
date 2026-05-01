@@ -247,7 +247,6 @@ class AnnotationCanvas {
     this.strokes   = annotation.strokes   ? [...annotation.strokes]   : [];
     this.textBoxes = annotation.textBoxes ? [...annotation.textBoxes] : [];
     this._history  = [];
-    this._syncSize();
     this.redraw();
   }
 

@@ -108,12 +108,11 @@ class VideoAnnotator {
     const thumbnail  = this.canvas.getSnapshot();
 
     this.composer.hide();
-    this.canvas.clearAll();
 
-    // Show annotation immediately (before server responds).
-    // Use 'replaying' stage so a stray pause event doesn't call _startAnnotating
-    // and wipe the canvas before the user sees their drawing.
-    this.canvas.loadAnnotation({ strokes, textBoxes });
+    // getSnapshot() ends with this.redraw(), so the drawing is already visible.
+    // Don't clearAll()+loadAnnotation() — that sequence can leave a blank canvas
+    // if _syncSize() reads offsetWidth=0 during the brief layout-pending window.
+    // Just disable interaction and let the RAF leave the canvas alone (stage≠idle).
     this.canvas.setTool(null);
     this.stage = 'replaying'; // annotation persists until video plays (_cancel clears it)
     if (this._replayTimer) { clearTimeout(this._replayTimer); this._replayTimer = null; }
@@ -133,6 +132,7 @@ class VideoAnnotator {
         const errData = await res.json().catch(() => ({}));
         if (typeof showToast === 'function') showToast(errData.error || 'Failed to post comment (' + res.status + ')', 'error');
         else console.error('Annotation comment post failed', res.status, errData);
+        this._cancel();
         return;
       }
 
@@ -145,6 +145,15 @@ class VideoAnnotator {
         textBoxes,
         thumbnailDataUrl: thumbnail
       }));
+
+      // Add click-to-replay card to the annotation list (top of comments panel)
+      this.commentListEl.prepend(
+        createCommentItem(
+          { id: newComment.id, timestamp: this.currentTimestamp, strokes, textBoxes,
+            thumbnailDataUrl: thumbnail, commentText, authorId: 'user' },
+          a => this._onCommentClick(a)
+        )
+      );
 
       // Notify the comment panel — CustomEvent avoids the async window._feedo timing race
       document.dispatchEvent(new CustomEvent('feedo:commentAdded', { detail: newComment }));
@@ -193,6 +202,7 @@ class VideoAnnotator {
     } catch (e) {
       console.error('Annotation comment network error', e);
       if (typeof showToast === 'function') showToast('Network error — comment not saved', 'error');
+      this._cancel();
     }
   }
 
