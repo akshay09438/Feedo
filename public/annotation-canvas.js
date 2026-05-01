@@ -276,30 +276,40 @@ class AnnotationCanvas {
 
   // ── snapshot (video frame + annotations) ──────────────────────────────────
   getSnapshot() {
-    const vw = this.videoEl.videoWidth  || this.canvas.offsetWidth;
-    const vh = this.videoEl.videoHeight || this.canvas.offsetHeight;
-
-    // Render at native video resolution
-    const temp    = document.createElement('canvas');
-    temp.width    = vw;
-    temp.height   = vh;
-    const tempCtx = temp.getContext('2d');
-
-    // Draw video frame
-    try { tempCtx.drawImage(this.videoEl, 0, 0, vw, vh); } catch (e) { /* CORS */ }
-
-    // Draw annotations scaled to native res
+    // Always restore canvas and never throw — returns null on any canvas security error
     const saved = { w: this.canvas.width, h: this.canvas.height };
-    this.canvas.width  = vw;
-    this.canvas.height = vh;
-    this.redraw();
-    tempCtx.drawImage(this.canvas, 0, 0);
+    try {
+      const vw = this.videoEl.videoWidth  || this.canvas.offsetWidth  || 1;
+      const vh = this.videoEl.videoHeight || this.canvas.offsetHeight || 1;
 
-    // Restore canvas
-    this.canvas.width  = saved.w;
-    this.canvas.height = saved.h;
-    this.redraw();
+      const temp    = document.createElement('canvas');
+      temp.width    = vw;
+      temp.height   = vh;
+      const tempCtx = temp.getContext('2d');
+      if (!tempCtx) return null;
 
-    return temp.toDataURL('image/jpeg', 0.85);
+      // Draw video frame (may taint canvas if video is cross-origin)
+      try { tempCtx.drawImage(this.videoEl, 0, 0, vw, vh); } catch (e) { /* CORS */ }
+
+      // Draw annotations scaled to native res
+      this.canvas.width  = vw;
+      this.canvas.height = vh;
+      this.redraw();
+      try { tempCtx.drawImage(this.canvas, 0, 0); } catch (e) { /* tainted */ }
+
+      // Restore canvas before returning
+      this.canvas.width  = saved.w;
+      this.canvas.height = saved.h;
+      this.redraw();
+
+      // toDataURL throws SecurityError if canvas is tainted by cross-origin video
+      try { return temp.toDataURL('image/jpeg', 0.85); } catch (e) { return null; }
+    } catch (e) {
+      // Ensure canvas is always restored even on unexpected errors
+      this.canvas.width  = saved.w;
+      this.canvas.height = saved.h;
+      this.redraw();
+      return null;
+    }
   }
 }
