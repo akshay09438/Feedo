@@ -1100,8 +1100,7 @@
         .forEach(a => drawAnnot(annotCtx, a));
     }
 
-    // Release pin when video plays — loop then tracks currentTime directly.
-    videoEl.addEventListener('play', () => { _pinTime = null; });
+    // No play listener here — annotations stay pinned when video plays, until user seeks away
 
     // Called from comment/reply card click handlers (module-level var).
     _directRenderAnnot = (t) => { renderPin(t); };
