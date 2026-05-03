@@ -40,6 +40,9 @@
   let capturedTimestamp = 0;
   let pinnedAnnotTime  = null; // exact timestamp for annotation rendering (survives keyframe snaps)
   let selectedFiles    = [];
+  let pendingVoiceBlob = null;   // { blob, duration } from VoiceRecorder
+  let pendingVoiceBlobUrl = null;
+  let pendingVoiceDuration = 0;
   let player           = null;
   let commentFilter    = 'all';
   let historyOpen      = false;
@@ -120,6 +123,12 @@
       onManualSeek: () => {
         // User scrubbed or used arrow keys — release the pinned annotation time
         pinnedAnnotTime = null;
+        // Also clear the "sticky" annotation so the RAF loop reverts to normal WIN filtering
+        if (window._videoAnnotator) {
+          window._videoAnnotator._activeAnnotationId = null;
+          window._videoAnnotator._activeAnnotationTimestamp = null;
+          document.dispatchEvent(new CustomEvent('feedo:annotationDeactivated'));
+        }
       }
     });
 
@@ -347,6 +356,7 @@
       // If this comment has annotation drawing data, replay it on the canvas
       if (annotData && window._videoAnnotator) {
         window._videoAnnotator._onCommentClick({
+          id: comment.id, // needed for sticky state
           timestamp: comment.timestamp,
           strokes: annotData.strokes || [],
           textBoxes: annotData.textBoxes || [],
@@ -614,7 +624,80 @@
   }
 
   function buildAttachmentEl(att, srcUrl) {
-    if (att.mime_type.startsWith('image/')) {
+    if (att.voice || att.mime_type.startsWith('audio/')) {
+      const el = document.createElement('div');
+      el.className = 'att-audio';
+      el.style.cssText = 'display:flex;align-items:center;gap:10px;padding:6px 0;';
+
+      const playBtn = document.createElement('button');
+      playBtn.style.cssText = 'width:34px;height:34px;border-radius:50%;border:none;background:#10b981;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;transition:transform 0.1s;';
+      playBtn.innerHTML = `<svg id="vp-play-${att.id}" width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+
+      const bar = document.createElement('div');
+      bar.style.cssText = 'flex:1;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden;cursor:pointer;position:relative;min-width:60px;';
+      const fill = document.createElement('div');
+      fill.style.cssText = 'width:0%;height:100%;background:#10b981;border-radius:2px;transition:width 0.1s;';
+
+      const dur = document.createElement('span');
+      dur.style.cssText = 'font-size:11px;color:#6b7280;font-variant-numeric:tabular-nums;min-width:36px;flex-shrink:0;';
+      const totalSecs = att.duration || 0;
+      dur.textContent = formatDuration(totalSecs);
+
+      const audio = document.createElement('audio');
+      audio.src = srcUrl;
+
+      const playIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+      const pauseIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+
+      playBtn.addEventListener('click', () => {
+        if (audio.paused) {
+          document.querySelectorAll('audio').forEach(a => a.pause());
+          document.querySelectorAll('audio').forEach(a => a.dispatchEvent(new Event('pause')));
+          audio.play();
+          playBtn.innerHTML = pauseIcon;
+          playBtn.style.background = '#059669';
+        } else {
+          audio.pause();
+          playBtn.innerHTML = playIcon;
+          playBtn.style.background = '#10b981';
+        }
+      });
+
+      audio.addEventListener('timeupdate', () => {
+        if (audio.duration) {
+          fill.style.width = ((audio.currentTime / audio.duration) * 100) + '%';
+          dur.textContent = `${formatDuration(audio.currentTime)} / ${formatDuration(audio.duration)}`;
+        }
+      });
+      audio.addEventListener('ended', () => {
+        playBtn.innerHTML = playIcon;
+        playBtn.style.background = '#10b981';
+        fill.style.width = '0%';
+        dur.textContent = formatDuration(audio.duration || totalSecs);
+      });
+      audio.addEventListener('pause', () => {
+        playBtn.innerHTML = playIcon;
+        playBtn.style.background = '#10b981';
+      });
+      audio.addEventListener('play', () => {
+        playBtn.innerHTML = pauseIcon;
+        playBtn.style.background = '#059669';
+      });
+
+      bar.addEventListener('click', (e) => {
+        const rect = bar.getBoundingClientRect();
+        audio.currentTime = ((e.clientX - rect.left) / rect.width) * audio.duration;
+      });
+
+      playBtn.addEventListener('mouseenter', () => { playBtn.style.transform = 'scale(1.08)'; });
+      playBtn.addEventListener('mouseleave', () => { playBtn.style.transform = 'scale(1)'; });
+
+      bar.appendChild(fill);
+      el.appendChild(playBtn);
+      el.appendChild(bar);
+      el.appendChild(dur);
+      return el;
+    } else if (att.mime_type.startsWith('image/')) {
       const el = document.createElement('div');
       el.className = 'att-thumb';
       el.title = att.original_name;
@@ -715,6 +798,167 @@
         submitNewComment();
       }
     });
+
+    // Voice recorder — build the button directly here to avoid cssText conflicts
+    const voiceContainer = document.getElementById('voice-record-container');
+    if (voiceContainer) {
+      const micIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
+
+      const voiceBtn = document.createElement('button');
+      voiceBtn.className = 'voice-record-btn';
+      voiceBtn.innerHTML = micIcon;
+      voiceBtn.title = 'Record voice feedback';
+      voiceBtn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;background:#10b981;border:1px solid #10b981;border-radius:6px;padding:6px 12px;cursor:pointer;color:#fff;font-size:12px;flex-shrink:0;';
+      voiceBtn.setAttribute('aria-label', 'Record voice');
+      voiceContainer.appendChild(voiceBtn);
+
+      const recorder = new VoiceRecorder((blob, duration) => {
+        pendingVoiceBlob = blob;
+        pendingVoiceDuration = duration;
+        if (pendingVoiceBlobUrl) URL.revokeObjectURL(pendingVoiceBlobUrl);
+        pendingVoiceBlobUrl = URL.createObjectURL(blob);
+        renderVoicePreview();
+      });
+
+      let recordingPanel = null;
+      voiceBtn.addEventListener('click', () => {
+        if (recorder.state === 'idle') {
+          recorder.start();
+          voiceBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`;
+          voiceBtn.style.borderColor = '#ef4444';
+          voiceBtn.style.color = '#fff';
+          // Show recording panel
+          if (recordingPanel) recordingPanel.remove();
+          recordingPanel = document.createElement('div');
+          recordingPanel.style.cssText = 'display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-top:6px;';
+          const dot = document.createElement('span');
+          dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#ef4444;animation:voicePulse 1s ease-in-out infinite;';
+          const styleEl = document.createElement('style');
+          styleEl.textContent = '@keyframes voicePulse{0%,100%{opacity:1}50%{opacity:0.3}}';
+          document.head.appendChild(styleEl);
+          const timeEl = document.createElement('span');
+          timeEl.id = 'recording-time';
+          timeEl.style.cssText = 'font-size:12px;color:var(--text-secondary);font-variant-numeric:tabular-nums;min-width:36px;';
+          timeEl.textContent = '0:00';
+          const stopBtn = document.createElement('button');
+          stopBtn.innerHTML = '&#x2715;';
+          stopBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:2px;';
+          stopBtn.addEventListener('click', () => {
+            recorder.stop();
+            voiceBtn.innerHTML = micIcon;
+            voiceBtn.style.borderColor = '#10b981';
+            voiceBtn.style.color = '#fff';
+            if (recordingPanel) { recordingPanel.remove(); recordingPanel = null; }
+          });
+          recordingPanel.appendChild(dot);
+          recordingPanel.appendChild(timeEl);
+          recordingPanel.appendChild(stopBtn);
+          voiceContainer.parentNode.insertBefore(recordingPanel, voiceContainer.nextSibling);
+          // Timer
+          setInterval(() => {
+            if (recorder.startTime) {
+              const secs = Math.floor((Date.now() - recorder.startTime) / 1000);
+              const m = Math.floor(secs / 60);
+              const s = secs % 60;
+              timeEl.textContent = `${m}:${s.toString().padStart(2,'0')}`;
+            }
+          }, 500);
+        } else {
+          recorder.stop();
+          voiceBtn.innerHTML = micIcon;
+          voiceBtn.style.borderColor = '#10b981';
+          voiceBtn.style.color = '#fff';
+          if (recordingPanel) { recordingPanel.remove(); recordingPanel = null; }
+        }
+      });
+    }
+  }
+
+  function renderVoicePreview() {
+    const area = document.getElementById('voice-preview-area');
+    if (!area || !pendingVoiceBlob) { if (area) area.innerHTML = ''; return; }
+    area.innerHTML = '';
+
+    const chip = document.createElement('div');
+    chip.style.cssText = 'display:flex; align-items:center; gap:10px; background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:8px 12px; flex-shrink:0;';
+
+    const playBtn = document.createElement('button');
+    playBtn.id = 'voice-play-btn';
+    playBtn.style.cssText = 'width:32px;height:32px;border-radius:50%;border:none;background:#10b981;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;';
+    playBtn.innerHTML = `<svg id="play-icon" width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+
+    const progressBar = document.createElement('div');
+    progressBar.style.cssText = 'flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden;cursor:pointer;position:relative;min-width:60px;';
+    const progressFill = document.createElement('div');
+    progressFill.id = 'voice-progress-fill';
+    progressFill.style.cssText = 'width:0%;height:100%;background:#10b981;border-radius:2px;transition:width 0.1s;';
+
+    const durationEl = document.createElement('span');
+    durationEl.id = 'voice-duration';
+    durationEl.style.cssText = 'font-size:11px;color:var(--text-secondary);font-variant-numeric:tabular-nums;min-width:32px;text-align:right;flex-shrink:0;';
+    durationEl.textContent = formatDuration(pendingVoiceDuration);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    removeBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:2px;display:flex;align-items:center;flex-shrink:0;';
+
+    const audio = document.createElement('audio');
+    audio.src = pendingVoiceBlobUrl;
+    audio.style.display = 'none';
+
+    const _playIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+    const _pauseIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+
+    playBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        audio.play();
+        playBtn.innerHTML = _pauseIcon;
+      } else {
+        audio.pause();
+        playBtn.innerHTML = _playIcon;
+      }
+    });
+
+    audio.addEventListener('timeupdate', () => {
+      if (audio.duration) {
+        const pct = (audio.currentTime / audio.duration) * 100;
+        progressFill.style.width = pct + '%';
+        durationEl.textContent = `${formatDuration(audio.currentTime)} / ${formatDuration(audio.duration)}`;
+      }
+    });
+    audio.addEventListener('ended', () => {
+      playBtn.innerHTML = _playIcon;
+      progressFill.style.width = '0%';
+    });
+
+    progressBar.addEventListener('click', (e) => {
+      const rect = progressBar.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      audio.currentTime = pct * audio.duration;
+    });
+
+    removeBtn.addEventListener('click', () => {
+      URL.revokeObjectURL(pendingVoiceBlobUrl);
+      pendingVoiceBlobUrl = null;
+      pendingVoiceBlob = null;
+      pendingVoiceDuration = 0;
+      renderVoicePreview();
+    });
+
+    progressBar.appendChild(progressFill);
+    chip.appendChild(playBtn);
+    chip.appendChild(progressBar);
+    chip.appendChild(durationEl);
+    chip.appendChild(removeBtn);
+    area.appendChild(chip);
+    area.appendChild(audio);
+  }
+
+  function formatDuration(secs) {
+    if (!secs || isNaN(secs)) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
   function renderSelectedFiles() {
@@ -735,9 +979,10 @@
 
   async function submitNewComment() {
     const text = commentText.value.trim();
-    if (!text) {
+    // Allow submission with voice only (no text required) OR with text (no voice required)
+    if (!text && !pendingVoiceBlob) {
       commentText.focus();
-      showToast('Please enter a comment', 'error');
+      showToast('Please enter a comment or record a voice message', 'error');
       return;
     }
 
@@ -745,12 +990,13 @@
     submitComment.textContent = 'Posting…';
 
     const displayName = localStorage.getItem('feedo_display_name') || 'Admin';
+    const finalText = text || (pendingVoiceBlob ? '🎤 Voice comment' : '');
 
     try {
       const res = await fetch(`/api/videos/${videoId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: capturedTimestamp, text, display_name: displayName })
+        body: JSON.stringify({ timestamp: capturedTimestamp, text: finalText, display_name: displayName })
       });
 
       if (!res.ok) {
@@ -774,6 +1020,32 @@
           showToast('Comment posted but attachments failed to upload', 'info');
           newComment.attachments = [];
         }
+      }
+
+      // Upload voice recording if one was captured
+      if (pendingVoiceBlob) {
+        const voiceForm = new FormData();
+        voiceForm.append('voice', pendingVoiceBlob, 'voice.webm');
+        voiceForm.append('duration', pendingVoiceDuration);
+        const voiceRes = await fetch(`/api/videos/${videoId}/voice`, { method: 'POST', body: voiceForm });
+        if (voiceRes.ok) {
+          const { url } = await voiceRes.json();
+          // Attach voice as a file attachment on the comment
+          const voiceAttRes = await fetch(`/api/comments/${newComment.id}/attachments`, {
+            method: 'POST',
+            body: (() => { const fd = new FormData(); fd.append('files', pendingVoiceBlob, 'voice.webm'); return fd; })()
+          });
+          if (voiceAttRes.ok) {
+            const voiceAtts = await voiceAttRes.json();
+            // Mark voice attachments so buildAttachmentEl renders a play button
+            (voiceAtts || []).forEach(a => { a.voice = 1; a.duration = pendingVoiceDuration; });
+            newComment.attachments = [...(newComment.attachments || []), ...(voiceAtts || [])];
+          }
+        }
+        URL.revokeObjectURL(pendingVoiceBlobUrl);
+        pendingVoiceBlob = null;
+        pendingVoiceDuration = 0;
+        renderVoicePreview();
       }
 
       // Annotation was already saved in postAnnotation() — just clear the flag
@@ -1213,18 +1485,44 @@
 
   // ── Annotation playback render loop (VideoAnnotator-based) ────────────────
   // Shows server-side annotations on the canvas during scrubbing/playback so
-  // drawings stay visible at their timestamp forever, not just after a card click.
+  // drawings stay visible at their timestamp — and "sticky" after a card click.
   function startAnnotationPlaybackLoop() {
     let _lastKey = null;
+
+    // Sticky state: set when a comment card is clicked, cleared on seek/new annotation
+    let _stickyAnnotId = null;
+    let _stickyTimestamp = null;
+
+    document.addEventListener('feedo:annotationActivated', e => {
+      _stickyAnnotId = e.detail.id;
+      _stickyTimestamp = e.detail.timestamp;
+      _lastKey = null; // force re-eval
+    });
+    document.addEventListener('feedo:annotationDeactivated', () => {
+      _stickyAnnotId = null;
+      _stickyTimestamp = null;
+      _lastKey = null;
+    });
 
     (function loop() {
       const va = window._videoAnnotator;
       if (va) {
         if (va.stage === 'idle') {
-          const t   = videoEl.currentTime;
-          const WIN = videoEl.paused ? 0.5 : (1 / 30); // wide when paused, tight when playing
-          const near = annotations.filter(a => Math.abs(a.timestamp - t) <= WIN);
-          const key  = near.map(a => a.id).sort().join(',');
+          const t = videoEl.currentTime;
+          let near;
+
+          if (_stickyAnnotId !== null) {
+            // Sticky mode: show ONLY the pinned annotation (ID-matched),
+            // regardless of current playback position — like a fixed screenshot.
+            // It disappears only when the user seeks or starts a new annotation.
+            near = annotations.filter(a => a.id === _stickyAnnotId);
+          } else {
+            // Normal playback: wider window so annotations don't flicker between frames
+            const WIN = videoEl.paused ? 1.0 : 0.5;
+            near = annotations.filter(a => Math.abs(a.timestamp - t) <= WIN);
+          }
+
+          const key = near.map(a => a.id).sort().join(',');
 
           if (key !== _lastKey) {
             _lastKey = key;

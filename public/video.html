@@ -148,6 +148,7 @@
           ></textarea>
           <div class="enter-hint"><em>Press Enter to submit</em></div>
           <div class="selected-files-list" id="selected-files-list"></div>
+          <div class="voice-preview-area" id="voice-preview-area"></div>
           <div class="comment-form-footer">
             <button class="attach-btn" id="attach-btn" title="Attach files">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -155,6 +156,7 @@
               </svg>
               Attach
             </button>
+            <div id="voice-record-container"></div>
             <div class="ctrl-spacer"></div>
             <button class="btn btn-primary" id="submit-comment" style="font-size:13px; padding:7px 16px;">
               Add Comment
@@ -184,6 +186,7 @@
 <script src="/annotation-composer.js"></script>
 <script src="/annotation-comment.js"></script>
 <script src="/video-annotator.js"></script>
+<script src="/voice-recorder.js"></script>
 <script>
 (function () {
   const parts   = window.location.pathname.split('/');

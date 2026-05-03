@@ -36,9 +36,10 @@ const ROOT = __dirname;
 const UPLOADS_BASE = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
 const VIDEOS_DIR = path.join(UPLOADS_BASE, 'videos');
 const ATTACHMENTS_DIR = path.join(UPLOADS_BASE, 'attachments');
+const VOICE_DIR = path.join(UPLOADS_BASE, 'voice');
 const DB_PATH = process.env.DB_PATH || (S3_BUCKET ? '/tmp/data.db' : path.join(__dirname, 'data.db'));
 
-[VIDEOS_DIR, ATTACHMENTS_DIR].forEach(d => {
+[VIDEOS_DIR, ATTACHMENTS_DIR, VOICE_DIR].forEach(d => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
@@ -227,9 +228,13 @@ async function initDatabase() {
       filename TEXT NOT NULL,
       original_name TEXT NOT NULL,
       mime_type TEXT NOT NULL,
+      voice INTEGER NOT NULL DEFAULT 0,
+      duration REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  try { db.run(`ALTER TABLE attachments ADD COLUMN voice INTEGER NOT NULL DEFAULT 0`); } catch(e) {}
+  try { db.run(`ALTER TABLE attachments ADD COLUMN duration REAL`); } catch(e) {}
 
   db.run(`
     CREATE TABLE IF NOT EXISTS annotations (
@@ -333,6 +338,16 @@ const uploadVideo = multer({
 const uploadAttachments = multer({
   storage: attachmentStorage,
   limits: { fileSize: 500 * 1024 * 1024, files: 20 }
+});
+
+const voiceStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, VOICE_DIR),
+  filename: (req, file, cb) => cb(null, uuidv4() + '.webm')
+});
+
+const uploadVoice = multer({
+  storage: voiceStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }
 });
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -863,6 +878,37 @@ app.delete('/api/annotations/:id', requireAuth, (req, res) => {
   }
 });
 
+// ── Voice upload ──────────────────────────────────────────────────────────────
+// Upload a voice recording and optionally attach it to a comment.
+// Returns: { filename, url } for the caller to embed in a comment.
+app.post('/api/videos/:id/voice', requireAuth, uploadVoice.single('voice'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No audio file uploaded' });
+  const video = getDb('SELECT id FROM videos WHERE id = ?', [req.params.id]);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+
+  // Duration sent by client (seconds, may be fractional)
+  const duration = req.body.duration ? parseFloat(req.body.duration) : null;
+
+  if (S3_BUCKET) {
+    const key = `voice/${req.file.filename}`;
+    await uploadToS3(req.file.buffer, key, req.file.mimetype || 'audio/webm');
+    const url = await getS3Url(key);
+    return res.json({ filename: req.file.filename, url, duration });
+  }
+
+  const url = `/api/voice/${req.file.filename}`;
+  res.json({ filename: req.file.filename, url, duration });
+});
+
+// Serve voice recordings
+app.get('/api/voice/:filename', requireAuth, (req, res) => {
+  const filePath = path.join(VOICE_DIR, req.params.filename);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+  res.setHeader('Content-Type', 'audio/webm');
+  res.setHeader('Cache-Control', 'max-age=31536000');
+  res.sendFile(filePath);
+});
+
 // ── Video versions ────────────────────────────────────────────────────────────
 app.get('/api/videos/:id/versions', requireAuth, (req, res) => {
   const video = getDb('SELECT * FROM videos WHERE id = ?', [req.params.id]);
@@ -1269,11 +1315,16 @@ app.post('/api/share/:token/comments/:id/attachments', uploadAttachments.array('
       } else {
         filename = file.filename;
       }
+      // Duration and voice flag sent by client for voice recordings
+      const duration = req.body.duration ? parseFloat(req.body.duration) : null;
+      const isVoice = req.body.voice === '1' ? 1 : 0;
       const id = insertDb(
-        'INSERT INTO attachments (comment_id, filename, original_name, mime_type) VALUES (?, ?, ?, ?)',
-        [comment.id, filename, file.originalname, file.mimetype || 'application/octet-stream']
+        'INSERT INTO attachments (comment_id, filename, original_name, mime_type, duration, voice) VALUES (?, ?, ?, ?, ?, ?)',
+        [comment.id, filename, file.originalname, file.mimetype || 'audio/webm', duration, isVoice]
       );
-      inserted.push(getDb('SELECT * FROM attachments WHERE id = ?', [id]));
+      const att = getDb('SELECT * FROM attachments WHERE id = ?', [id]);
+      if (isVoice) att.voice = 1;
+      inserted.push(att);
     }
     res.status(201).json(inserted);
   } catch(e) {

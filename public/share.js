@@ -123,6 +123,10 @@
   let capturedTimestamp = 0;
   let pendingAnnotation = null;
   let commentFilter     = 'all';
+  let pendingVoiceBlob    = null;
+  let pendingVoiceBlobUrl = null;
+  let pendingVoiceDuration = 0;
+  let voiceRecorderInstance = null;
 
   // Direct annotation renderer — set by setupAnnotationRenderer, called from click handlers
   // to force annotation display independent of video events.
@@ -198,7 +202,8 @@
       setupAnnotationRenderer();
 
     } catch (e) {
-      document.body.innerHTML = `<div class="error-page"><h1>Load Error</h1><p>Could not load this shared video. Please try again.</p></div>`;
+      console.error('[Share] init error:', e);
+      document.body.innerHTML = `<div class="error-page"><h1>Load Error</h1><p>Could not load this shared video. Please try again.</p><p style="font-size:12px;color:#999;margin-top:8px;">${e && e.message ? e.message : ''}</p></div>`;
     }
   }
 
@@ -644,7 +649,77 @@
 
   // ── Attachment display ────────────────────────────────────────────────────
   function buildAttachmentEl(att, srcUrl) {
-    if (att.mime_type.startsWith('image/')) {
+    // Audio/voice attachment — render a play button with progress bar
+    if (att.voice || (att.mime_type && att.mime_type.startsWith('audio/'))) {
+      const el = document.createElement('div');
+      el.className = 'att-audio';
+
+      const playBtn = document.createElement('button');
+      playBtn.className = 'play-btn';
+      playBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+
+      const bar = document.createElement('div');
+      bar.className = 'progress-track';
+      const fill = document.createElement('div');
+      fill.className = 'progress-fill';
+
+      const dur = document.createElement('span');
+      dur.className = 'duration';
+      dur.textContent = formatDuration(att.duration || 0);
+
+      const audio = document.createElement('audio');
+      audio.src = srcUrl;
+
+      const playIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+      const pauseIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+
+      playBtn.addEventListener('click', () => {
+        if (audio.paused) {
+          document.querySelectorAll('audio').forEach(a => a.pause());
+          document.querySelectorAll('audio').forEach(a => a.dispatchEvent(new Event('pause')));
+          audio.play();
+          playBtn.innerHTML = pauseIcon;
+        } else {
+          audio.pause();
+          playBtn.innerHTML = playIcon;
+        }
+      });
+
+      audio.addEventListener('play', () => { playBtn.style.transform = 'scale(1.1)'; });
+      audio.addEventListener('pause', () => { playBtn.style.transform = ''; playBtn.innerHTML = playIcon; });
+      audio.addEventListener('ended', () => {
+        playBtn.style.transform = '';
+        playBtn.innerHTML = playIcon;
+        fill.style.width = '0%';
+        dur.textContent = formatDuration(audio.duration || 0);
+      });
+      audio.addEventListener('timeupdate', () => {
+        if (audio.duration && isFinite(audio.duration) && audio.duration > 0) {
+          fill.style.width = ((audio.currentTime / audio.duration) * 100) + '%';
+          dur.textContent = `${formatDuration(audio.currentTime)} / ${formatDuration(audio.duration)}`;
+        }
+      });
+      audio.addEventListener('loadedmetadata', () => {
+        const d = audio.duration;
+        if (isFinite(d) && d > 0) {
+          dur.textContent = formatDuration(d);
+        }
+      });
+
+      bar.addEventListener('click', e => {
+        const rect = bar.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        audio.currentTime = pct * audio.duration;
+      });
+
+      el.appendChild(playBtn);
+      el.appendChild(bar);
+      el.appendChild(dur);
+      el.appendChild(audio);
+      return el;
+    }
+
+    if (att.mime_type && att.mime_type.startsWith('image/')) {
       const el = document.createElement('div');
       el.className = 'att-thumb'; el.title = att.original_name;
       const img = document.createElement('img');
@@ -652,23 +727,24 @@
       el.appendChild(img);
       el.addEventListener('click', () => showAttachment(att, srcUrl));
       return el;
-    } else if (att.mime_type.startsWith('video/')) {
+    }
+    if (att.mime_type && att.mime_type.startsWith('video/')) {
       const el = document.createElement('div');
       el.className = 'att-video-thumb'; el.title = att.original_name;
       el.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>`;
       el.addEventListener('click', () => showAttachment(att, srcUrl));
       return el;
-    } else {
-      const el = document.createElement('div');
-      el.className = 'att-chip'; el.title = att.original_name;
-      el.innerHTML = `
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
-        </svg>
-        <span>${escapeHtml(att.original_name)}</span>`;
-      el.addEventListener('click', () => showAttachment(att, srcUrl));
-      return el;
     }
+
+    const el = document.createElement('div');
+    el.className = 'att-chip'; el.title = att.original_name;
+    el.innerHTML = `
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+      </svg>
+      <span>${escapeHtml(att.original_name)}</span>`;
+    el.addEventListener('click', () => showAttachment(att, srcUrl));
+    return el;
   }
 
   // ── Selected files display ─────────────────────────────────────────────────
@@ -712,26 +788,216 @@
         renderSelectedFiles();
       });
     }
+
+    // Voice recorder — exact same implementation as owner dashboard
+    const voiceArea = document.getElementById('share-voice-area');
+    if (voiceArea) {
+      const micIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>`;
+
+      const voiceBtn = document.createElement('button');
+      voiceBtn.className = 'voice-record-btn';
+      voiceBtn.innerHTML = micIcon;
+      voiceBtn.title = 'Record voice feedback';
+      voiceBtn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;background:#10b981;border:1px solid #10b981;border-radius:6px;padding:6px 12px;cursor:pointer;color:#fff;font-size:12px;flex-shrink:0;';
+      voiceBtn.setAttribute('aria-label', 'Record voice');
+      voiceArea.appendChild(voiceBtn);
+
+      const recorder = new VoiceRecorder((blob, duration) => {
+        pendingVoiceBlob = blob;
+        pendingVoiceDuration = duration;
+        if (pendingVoiceBlobUrl) URL.revokeObjectURL(pendingVoiceBlobUrl);
+        pendingVoiceBlobUrl = URL.createObjectURL(blob);
+        renderVoicePreview();
+      });
+      voiceRecorderInstance = recorder;
+
+      let recordingPanel = null;
+      voiceBtn.addEventListener('click', () => {
+        if (recorder.state === 'idle') {
+          recorder.start();
+          voiceBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>`;
+          voiceBtn.style.borderColor = '#ef4444';
+          voiceBtn.style.color = '#fff';
+          // Show recording panel
+          if (recordingPanel) recordingPanel.remove();
+          recordingPanel = document.createElement('div');
+          recordingPanel.style.cssText = 'display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-top:6px;';
+          const dot = document.createElement('span');
+          dot.style.cssText = 'width:8px;height:8px;border-radius:50%;background:#ef4444;animation:voicePulse 1s ease-in-out infinite;';
+          const styleEl = document.createElement('style');
+          styleEl.textContent = '@keyframes voicePulse{0%,100%{opacity:1}50%{opacity:0.3}}';
+          document.head.appendChild(styleEl);
+          const timeEl = document.createElement('span');
+          timeEl.id = 'recording-time';
+          timeEl.style.cssText = 'font-size:12px;color:var(--text-secondary);font-variant-numeric:tabular-nums;min-width:36px;';
+          timeEl.textContent = '0:00';
+          const stopBtn = document.createElement('button');
+          stopBtn.innerHTML = '&#x2715;';
+          stopBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:2px;';
+          stopBtn.addEventListener('click', () => {
+            recorder.stop();
+            voiceBtn.innerHTML = micIcon;
+            voiceBtn.style.borderColor = '#10b981';
+            voiceBtn.style.color = '#fff';
+            if (recordingPanel) { recordingPanel.remove(); recordingPanel = null; }
+          });
+          recordingPanel.appendChild(dot);
+          recordingPanel.appendChild(timeEl);
+          recordingPanel.appendChild(stopBtn);
+          voiceArea.parentNode.insertBefore(recordingPanel, voiceArea.nextSibling);
+          // Timer
+          setInterval(() => {
+            if (recorder.startTime) {
+              const secs = Math.floor((Date.now() - recorder.startTime) / 1000);
+              const m = Math.floor(secs / 60);
+              const s = secs % 60;
+              if (timeEl) timeEl.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+            }
+          }, 500);
+        } else {
+          recorder.stop();
+          voiceBtn.innerHTML = micIcon;
+          voiceBtn.style.borderColor = '#10b981';
+          voiceBtn.style.color = '#fff';
+          if (recordingPanel) { recordingPanel.remove(); recordingPanel = null; }
+        }
+      });
+    }
+  }
+
+  // ── Voice Preview ───────────────────────────────────────────────────────
+  function renderVoicePreview() {
+    const voiceArea = document.getElementById('share-voice-area');
+    if (!voiceArea) return;
+    // Remove existing preview
+    const existing = voiceArea.querySelector('.voice-preview-chip');
+    if (existing) existing.remove();
+    if (!pendingVoiceBlobUrl) return;
+
+    const chip = document.createElement('div');
+    chip.className = 'voice-preview-chip';
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'play-btn';
+    playBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+
+    const progressBar = document.createElement('div');
+    progressBar.className = 'progress-bar';
+    const progressFill = document.createElement('div');
+    progressFill.className = 'progress-fill';
+
+    const durationEl = document.createElement('span');
+    durationEl.className = 'duration';
+    durationEl.textContent = formatDuration(pendingVoiceDuration);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'remove-btn';
+    removeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+    const audio = document.createElement('audio');
+    audio.src = pendingVoiceBlobUrl;
+    audio.style.display = 'none';
+
+    const _playIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><polygon points="5,3 19,12 5,21"/></svg>`;
+    const _pauseIcon = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+
+    playBtn.addEventListener('click', () => {
+      if (audio.paused) {
+        audio.play();
+        playBtn.innerHTML = _pauseIcon;
+      } else {
+        audio.pause();
+        playBtn.innerHTML = _playIcon;
+      }
+    });
+
+    audio.addEventListener('timeupdate', () => {
+      if (audio.duration) {
+        const pct = (audio.currentTime / audio.duration) * 100;
+        progressFill.style.width = pct + '%';
+        durationEl.textContent = `${formatDuration(audio.currentTime)} / ${formatDuration(audio.duration)}`;
+      }
+    });
+    audio.addEventListener('ended', () => {
+      playBtn.innerHTML = _playIcon;
+      progressFill.style.width = '0%';
+    });
+
+    progressBar.addEventListener('click', (e) => {
+      const rect = progressBar.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      audio.currentTime = pct * audio.duration;
+    });
+
+    removeBtn.addEventListener('click', () => {
+      URL.revokeObjectURL(pendingVoiceBlobUrl);
+      pendingVoiceBlobUrl = null;
+      pendingVoiceBlob = null;
+      pendingVoiceDuration = 0;
+      renderVoicePreview();
+    });
+
+    progressBar.appendChild(progressFill);
+    chip.appendChild(playBtn);
+    chip.appendChild(progressBar);
+    chip.appendChild(durationEl);
+    chip.appendChild(removeBtn);
+    voiceArea.appendChild(chip);
+    voiceArea.appendChild(audio);
+  }
+
+  function formatDuration(secs) {
+    if (!secs || isNaN(secs)) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
   async function submitNewComment() {
     const text = commentText.value.trim();
-    if (!text) { commentText.focus(); showToast('Please enter a comment', 'error'); return; }
+    // Allow submission with voice only (no text required) OR with text (no voice required)
+    if (!text && !pendingVoiceBlob) {
+      commentText.focus();
+      showToast('Please enter a comment or record a voice message', 'error');
+      return;
+    }
 
     submitComment.disabled = true;
     submitComment.textContent = 'Posting…';
     const displayName = getDisplayName() || 'Guest';
 
     try {
+      const finalText = text || (pendingVoiceBlob ? '🎤 Voice comment' : '');
       const res = await fetch(`/api/share/${token}/comments`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: capturedTimestamp, text, guest_id: GUEST_ID, display_name: displayName })
+        body: JSON.stringify({ timestamp: capturedTimestamp, text: finalText, guest_id: GUEST_ID, display_name: displayName })
       });
       if (!res.ok) { const err = await res.json(); showToast(err.error || 'Failed', 'error'); return; }
 
       const newComment = await res.json();
 
-      // Upload attachments if any
+      // Upload voice recording if any
+      if (pendingVoiceBlob) {
+        try {
+          const fd = new FormData();
+          fd.append('files', pendingVoiceBlob, 'voice.webm');
+          fd.append('voice', '1');
+          fd.append('duration', String(pendingVoiceDuration || 0));
+          const attRes = await fetch(`/api/share/${token}/comments/${newComment.id}/attachments`, { method: 'POST', body: fd });
+          if (attRes.ok) {
+            const voiceAtts = await attRes.json();
+            (voiceAtts || []).forEach(a => { a.voice = 1; a.duration = pendingVoiceDuration; });
+            newComment.attachments = [...(newComment.attachments || []), ...(voiceAtts || [])];
+          }
+        } catch(e) {}
+        pendingVoiceBlob = null;
+        pendingVoiceDuration = 0;
+        if (pendingVoiceBlobUrl) { URL.revokeObjectURL(pendingVoiceBlobUrl); pendingVoiceBlobUrl = null; }
+        renderVoicePreview();
+      }
+
+      // Upload file attachments if any
+      let fileAtts = [];
       if (selectedFiles.length > 0) {
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('files', f));
@@ -739,17 +1005,20 @@
           method: 'POST', body: formData
         });
         if (attRes.ok) {
-          newComment.attachments = await attRes.json();
+          fileAtts = await attRes.json();
         } else {
           showToast('Comment posted but attachments failed', 'info');
-          newComment.attachments = [];
         }
-      } else {
-        newComment.attachments = [];
       }
 
-      // Clear pending annotation flag (already saved in postAnnotation)
-      pendingAnnotation = null;
+      // Combine voice + file attachments
+      newComment.attachments = [...(newComment.attachments || []), ...fileAtts];
+
+      // Clear voice preview and pending state
+      if (pendingVoiceBlobUrl) { URL.revokeObjectURL(pendingVoiceBlobUrl); pendingVoiceBlobUrl = null; }
+      pendingVoiceBlob = null;
+      pendingVoiceDuration = 0;
+      renderVoicePreview();
 
       comments.push(newComment);
       comments.sort((a, b) => a.timestamp - b.timestamp);
@@ -768,6 +1037,10 @@
       showToast('Comment added', 'success');
     } catch(e) {
       showToast('Network error', 'error');
+      // Clean up voice on error too
+      if (pendingVoiceBlobUrl) { URL.revokeObjectURL(pendingVoiceBlobUrl); pendingVoiceBlobUrl = null; }
+      pendingVoiceBlob = null;
+      pendingVoiceDuration = 0;
     } finally {
       submitComment.disabled = false;
       submitComment.textContent = 'Add Comment';
@@ -872,24 +1145,39 @@
     }
 
     // ── Always-on render loop ──────────────────────────────────────────────
-    // pinned  → show annotations near _pinTime (comment-card click / seek)
-    // paused  → show annotations within 2 s of current time (stays while at timestamp)
-    // playing → show annotations within 1 frame (brief flash at exact timestamp)
+    // _pinTime → annotation stays pinned to exact timestamp (from card click or post)
+    // paused → show annotations within 1.0s of current time
+    // playing → show annotations within 0.5s window (no flicker)
     (function loop() {
       annotCtx.clearRect(0, 0, annotCanvas.width, annotCanvas.height);
-      let t, win;
+      let near;
       if (_pinTime !== null) {
-        t = _pinTime;            win = 0.5;
+        // Pinned mode: ID-only match — pure screenshot behavior
+        near = annotations.filter(a => a.id === _pinTime || Math.abs(a.timestamp - _pinTime) <= 1.0);
       } else if (videoEl.paused) {
-        t = videoEl.currentTime; win = 0.5;
+        const t = videoEl.currentTime;
+        near = annotations.filter(a => Math.abs(a.timestamp - t) <= 1.0);
       } else {
-        t = videoEl.currentTime; win = 1 / 30;
+        // Playback: show within 0.5s window (no 1/30 flicker)
+        const t = videoEl.currentTime;
+        near = annotations.filter(a => Math.abs(a.timestamp - t) <= 0.5);
       }
-      annotations
-        .filter(a => Math.abs(a.timestamp - t) <= win)
-        .forEach(a => drawAnnot(annotCtx, a));
+      near.forEach(a => drawAnnot(annotCtx, a));
       requestAnimationFrame(loop);
     })();
+
+    // Listen for feedo events from the share annotator
+    document.addEventListener('feedo:annotationActivated', e => {
+      // When a card is clicked, pin the annotation persistently
+      _pinTime = e.detail.timestamp;
+      _lastKey = null;
+    });
+    document.addEventListener('feedo:annotationDeactivated', () => {
+      _pinTime = null;
+      _lastKey = null;
+    });
+
+    let _lastKey = null;
 
     async function loadAnnotations() {
       try {
@@ -921,18 +1209,33 @@
     let currentTimestamp = null;
     let hasPlayed        = false;
     let suppressPause    = false;
+    let pendingAnnotation = null;
+    let pendingVoiceBlob     = null;
+    let pendingVoiceDuration = 0;
+    let voiceRecorderInstance = null;
 
     function startAnnotating(ts) {
       stage            = 'annotating';
       currentTimestamp = ts;
+      document.dispatchEvent(new CustomEvent('feedo:annotationDeactivated'));
       annotCanvas.clearAll();
-      annotCanvas.setTool('draw');
-      toolbar.setActiveTool('draw');
+      annotCanvas.setTool(null);
+      toolbar.setActiveTool(null);
       toolbar.setPostEnabled(false);
       toolbar.show();
     }
 
     function cancel() {
+      // Clear pin so annotation reverts to normal time-based visibility
+      try { _pinTime = null; } catch(e) {}
+      document.dispatchEvent(new CustomEvent('feedo:annotationDeactivated'));
+      // Remove voice recorder so it's not stuck in toolbar after cancel
+      const vr = toolbar.el.querySelector('.voice-record-btn');
+      if (vr) {
+        const panel = vr.closest('[style*="margin-top"]');
+        vr.remove();
+        if (panel && panel.children.length === 0) panel.remove();
+      }
       toolbar.hide();
       composer.hide();
       annotCanvas.clearAll();
@@ -965,44 +1268,37 @@
       const thumbnail    = annotCanvas.getSnapshot();
 
       composer.hide();
-      annotCanvas.clearAll();
       stage = 'idle';
+
+      // Pin annotation so it stays visible after posting
+      _pinTime = currentTimestamp;
+      document.dispatchEvent(new CustomEvent('feedo:annotationActivated', {
+        detail: { id: null, timestamp: currentTimestamp }
+      }));
+
+      // Reload the drawing so it stays on screen
+      if (strokes.length > 0 || textBoxes.length > 0) {
+        annotCanvas.strokes   = strokes;
+        annotCanvas.textBoxes = textBoxes;
+        annotCanvas.redraw();
+      }
+      annotCanvas.setTool(null);
+
+      const clearTimer = setTimeout(() => {
+        _pinTime = null;
+        document.dispatchEvent(new CustomEvent('feedo:annotationDeactivated'));
+      }, 4000);
+
+      pendingAnnotation = null;
 
       // Show annotation immediately so user sees it without waiting for server
       annotCanvas.loadAnnotation({ strokes, textBoxes });
-      annotCanvas.setTool(null);
-      const clearTimer = setTimeout(() => { annotCanvas.clearAll(); }, 4000);
 
       try {
-        // Save drawing data to server — all annotation saves fire in parallel
-        const annotSaves = [];
-        if (strokes.length > 0) {
-          const normalized = strokes.map(s => ({
-            points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
-          }));
-          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ timestamp: currentTimestamp, type: 'draw',
-              data: { strokes: normalized }, author: displayName, color: '#FF3B30' })
-          }).then(async r => {
-            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
-          }).catch(() => {}));
-        }
-        for (const tb of textBoxes) {
-          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ timestamp: currentTimestamp, type: 'text',
-              data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
-              author: displayName, color: '#ffffff' })
-          }).then(async r => {
-            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
-          }).catch(() => {}));
-        }
-        await Promise.all(annotSaves);
-
-        // Post comment
+        // 1. Post the comment first (needed for comment ID)
         const res = await fetch(`/api/share/${token}/comments`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ timestamp: currentTimestamp, text: commentText,
             guest_id: GUEST_ID, display_name: displayName })
         });
@@ -1011,12 +1307,63 @@
         const newComment = await res.json();
         newComment.attachments = [];
 
-        // Save drawing locally for replay when clicking comment
+        // 2. Upload voice recording if any (requires comment ID)
+        if (pendingVoiceBlob) {
+          try {
+            const fd = new FormData();
+            fd.append('files', pendingVoiceBlob, 'voice.webm');
+            fd.append('voice', '1');
+            fd.append('duration', String(pendingVoiceDuration || 0));
+            const attRes = await fetch(`/api/share/${token}/comments/${newComment.id}/attachments`, { method: 'POST', body: fd });
+            if (attRes.ok) {
+              const voiceAtts = await attRes.json();
+              (voiceAtts || []).forEach(a => { a.voice = 1; a.duration = pendingVoiceDuration; });
+              newComment.attachments = [...(newComment.attachments || []), ...(voiceAtts || [])];
+            }
+          } catch(e) {}
+          pendingVoiceBlob = null;
+          pendingVoiceDuration = 0;
+          if (pendingVoiceBlobUrl) { URL.revokeObjectURL(pendingVoiceBlobUrl); pendingVoiceBlobUrl = null; }
+          renderVoicePreview();
+        }
+
+        // 3. Save drawing data to server in background
+        const annotSaves = [];
+        if (strokes.length > 0) {
+          const normalized = strokes.map(s => ({
+            points: s.points.map(p => ({ x: p.x / 100, y: p.y / 100 }))
+          }));
+          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timestamp: currentTimestamp, type: 'draw',
+              data: { strokes: normalized }, author: displayName, color: '#FF3B30' })
+          }).then(async r => {
+            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
+          }).catch(() => {}));
+        }
+        for (const tb of textBoxes) {
+          annotSaves.push(fetch(`/api/share/${token}/annotations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timestamp: currentTimestamp, type: 'text',
+              data: { text: tb.text, x: tb.x / 100, y: tb.y / 100 },
+              author: displayName, color: '#ffffff' })
+          }).then(async r => {
+            if (r.ok) { const { annotation } = await r.json(); if (annotation) annotations.push(annotation); }
+          }).catch(() => {}));
+        }
+        Promise.all(annotSaves).catch(() => {});
+
+        // Save drawing locally for localStorage replay
+        const thumbnail = annotCanvas.getSnapshot();
         localStorage.setItem('annot_' + newComment.id, JSON.stringify({ strokes, textBoxes, thumbnailDataUrl: thumbnail }));
 
+        // 4. Add to comments list
         comments.push(newComment);
         comments.sort((a, b) => a.timestamp - b.timestamp);
         renderComments();
+
         const newCard = document.querySelector(`.comment-card[data-id="${newComment.id}"]`);
         if (newCard) {
           newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1028,6 +1375,7 @@
       } catch(e) {
         console.error('[Share] composer.onSubmit error:', e);
         clearTimeout(clearTimer);
+        _pinTime = null;
         annotCanvas.clearAll();
         showToast('Failed to post comment', 'error');
       }
@@ -1044,7 +1392,12 @@
     const origDirectRender = _directRenderAnnot;
     _directRenderAnnot = (t) => {
       suppressPause = true;
+      _pinTime = t; // pin annotation to this timestamp persistently
       if (origDirectRender) origDirectRender(t);
+      // Dispatch event so the read-only loop also reacts
+      document.dispatchEvent(new CustomEvent('feedo:annotationActivated', {
+        detail: { id: null, timestamp: t }
+      }));
     };
   }
 

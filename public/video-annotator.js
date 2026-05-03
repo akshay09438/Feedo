@@ -13,6 +13,8 @@ class VideoAnnotator {
     this._suppressPause   = false; // prevent replay-pause from opening toolbar
     this._hasPlayed       = false; // don't open toolbar before first play
     this._pendingThumbnail = null; // thumbnail captured in _onPost(), used in _onCommentSubmit()
+    this._activeAnnotationId = null;    // annotation pinned by card click — makes it "sticky"
+    this._activeAnnotationTimestamp = null;
 
     const wrapper = videoEl.parentElement; // .video-wrapper
 
@@ -70,11 +72,24 @@ class VideoAnnotator {
   _startAnnotating(timestamp) {
     this.stage            = 'annotating';
     this.currentTimestamp = timestamp;
+    // Clear "sticky" active annotation so the RAF loop uses normal WIN filtering
+    this._activeAnnotationId = null;
+    this._activeAnnotationTimestamp = null;
+    document.dispatchEvent(new CustomEvent('feedo:annotationDeactivated'));
     this.canvas.clearAll();
     this.canvas.setTool(null);      // no tool active — cursor stays normal
     this.toolbar.setActiveTool(null); // no button highlighted until user picks one
     this.toolbar.setPostEnabled(false);
     this.toolbar.show();
+  }
+
+  // Called by video.js after a comment card is clicked — pins the annotation "sticky"
+  setActiveAnnotation(id, timestamp) {
+    this._activeAnnotationId = id;
+    this._activeAnnotationTimestamp = timestamp;
+    document.dispatchEvent(new CustomEvent('feedo:annotationActivated', {
+      detail: { id, timestamp }
+    }));
   }
 
   _onStrokeComplete() {
@@ -226,5 +241,8 @@ class VideoAnnotator {
     this.composer.hide();
     this.canvas.loadAnnotation(annotation);
     this.canvas.setTool(null); // display-only
+
+    // Pin this annotation as "active" so the RAF loop shows it persistently
+    this.setActiveAnnotation(annotation.id, annotation.timestamp);
   }
 }
