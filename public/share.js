@@ -132,6 +132,9 @@
   // to force annotation display independent of video events.
   let _directRenderAnnot = null;
 
+  // _pinTime: module-level so both setupAnnotationRenderer and setupShareAnnotator can access it
+  let _pinTime = null;
+
   // ── Per-author color assignment (hash-based — deterministic per name) ───────
   const authorColorMap  = new Map();
   const shareColorPalette = ['#f59e0b','#10b981','#8b5cf6','#ef4444','#f97316','#06b6d4','#ec4899','#84cc16','#a78bfa','#fb923c'];
@@ -1085,8 +1088,7 @@
 
     // _pinTime: when set, the rAF loop locks the annotation display to this exact
     // timestamp regardless of where the video is. Set after comment-card click or
-    // after posting an annotation.
-    let _pinTime = null;
+    // after posting an annotation. Declared at module level above.
 
     // Immediately draws all annotations matching timestamp t onto annot-canvas.
     // Called synchronously (no rAF delay) so the annotation appears instantly.
