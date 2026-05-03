@@ -33,15 +33,13 @@ const s3 = S3_BUCKET ? new S3Client({
 
 // ── Directories ───────────────────────────────────────────────────────────────
 const ROOT = __dirname;
-const UPLOADS_BASE = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
+// Vercel serverless: only /tmp is writable
+const IS_VERCEL = process.env.VERCEL === '1';
+const UPLOADS_BASE = IS_VERCEL ? '/tmp/uploads' : (process.env.UPLOADS_DIR || path.join(__dirname, 'uploads'));
 const VIDEOS_DIR = path.join(UPLOADS_BASE, 'videos');
 const ATTACHMENTS_DIR = path.join(UPLOADS_BASE, 'attachments');
 const VOICE_DIR = path.join(UPLOADS_BASE, 'voice');
-const DB_PATH = process.env.DB_PATH || (S3_BUCKET ? '/tmp/data.db' : path.join(__dirname, 'data.db'));
-
-[VIDEOS_DIR, ATTACHMENTS_DIR, VOICE_DIR].forEach(d => {
-  if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-});
+const DB_PATH = process.env.DB_PATH || (IS_VERCEL ? '/tmp/data.db' : path.join(__dirname, 'data.db'));
 
 async function uploadToS3(buffer, key, mimeType) {
   await s3.send(new PutObjectCommand({
@@ -90,12 +88,19 @@ async function uploadDbToS3() {
 // ── Database (sql.js — pure WASM, no native build required) ──────────────────
 let db;
 
+function ensureTmpDirs() {
+  [UPLOADS_BASE, VIDEOS_DIR, ATTACHMENTS_DIR, VOICE_DIR].forEach(d => {
+    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  });
+}
+
 // Debounced write — batches rapid successive writes into one disk flush
 let _saveTimer = null;
 function saveDb() {
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     _saveTimer = null;
+    if (IS_VERCEL) return; // Don't persist to ephemeral /tmp
     try {
       const data = db.export();
       fs.writeFileSync(DB_PATH, Buffer.from(data));
@@ -106,6 +111,7 @@ function saveDb() {
 // Immediate flush used on process exit
 function saveDbNow() {
   if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  if (IS_VERCEL) return;
   try {
     const data = db.export();
     fs.writeFileSync(DB_PATH, Buffer.from(data));
@@ -151,6 +157,7 @@ function insertDb(sql, params = []) {
 }
 
 async function initDatabase() {
+  ensureTmpDirs();
   if (S3_BUCKET) await downloadDbFromS3();
 
   const SQL = await initSqlJs({
