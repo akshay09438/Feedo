@@ -4,3 +4,4 @@ uploads/videos/
 uploads/attachments/
 .env
 *.log
+.vercel
