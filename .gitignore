@@ -5,3 +5,4 @@ uploads/attachments/
 .env
 *.log
 .vercel
+.env*.local
