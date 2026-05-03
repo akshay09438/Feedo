@@ -164,6 +164,7 @@
       comments = data.comments || [];
       versions = data.versions || [];
       allowComments = !!data.allow_comments;
+      console.log('[DEBUG] Loaded', comments.length, 'comments, allowComments:', allowComments);
 
       document.title = `${video.name} — Feedo`;
       videoNameEl.textContent = video.name;
@@ -175,11 +176,13 @@
       player = createVideoPlayer(videoEl, {
         commentsGetter: () => comments,
         onPause: () => {
+          console.log('[DEBUG] Video paused');
           if (allowComments && commentText && !pendingAnnotation) {
             setTimeout(() => { if (videoEl.paused) commentText.focus(); }, 50);
           }
         }
       });
+      console.log('[DEBUG] Player created, player.seekTo exists:', typeof player?.seekTo);
 
       if (allowComments) {
         viewOnlyNote.style.display = 'none';
@@ -361,9 +364,15 @@
     // _directRenderAnnot is called first so suppressPause is set before seekTo fires
     // the pause event (prevents the draw toolbar from flashing open).
     card.addEventListener('click', e => {
+      console.log('[DEBUG] Comment card clicked, timestamp:', comment.timestamp, 'player:', player ? 'exists' : 'null');
       if (e.target.closest('button') || e.target.closest('.comment-edit-form')) return;
       if (_directRenderAnnot) _directRenderAnnot(comment.timestamp);
-      if (player) player.seekTo(comment.timestamp);
+      if (player) {
+        console.log('[DEBUG] Calling player.seekTo with timestamp:', comment.timestamp);
+        player.seekTo(comment.timestamp);
+      } else {
+        console.log('[DEBUG] player is null, cannot seek');
+      }
     });
 
     if (allowComments) {
